@@ -344,7 +344,7 @@ class OmniDrawPlugin(Star):
         
         msg = f"{MessageEmoji.PAINTING} 收到灵感，正在绘制..."
         if self.plugin_config.verbose_report:
-            msg += f"\n[调试] 宏对应提示词: {preset_prompt}\n[调试] 识别参考图: {len(safe_refs) if safe_refs else 0}张"
+            msg += f"\n📝 宏对应提示词: {preset_prompt}\n🖼️ 实际参考图：{len(safe_refs) if safe_refs else 0} 张"
         yield event.plain_result(msg)
         
         try:
@@ -368,11 +368,12 @@ class OmniDrawPlugin(Star):
             
         safe_refs = await self._process_and_save_images(raw_refs)
         prompt, kwargs = self.cmd_parser.parse(message)
+        param_count = len(kwargs)
         if safe_refs: kwargs["user_refs"] = safe_refs
             
         msg = f"{MessageEmoji.PAINTING} 收到灵感，正在绘制..."
         if self.plugin_config.verbose_report:
-            msg += f"\n[调试] 最终提示词: {prompt}\n[调试] 透传参数: {len(kwargs)}个\n[调试] 识别参考图: {len(safe_refs) if safe_refs else 0}张"
+            msg += f"\n📝 最终提示词: {prompt}\n⚙️ 附加参数：{param_count} 个\n🖼️ 实际参考图：{len(safe_refs) if safe_refs else 0} 张"
         yield event.plain_result(msg)
         
         async with aiohttp.ClientSession() as session:
@@ -392,6 +393,7 @@ class OmniDrawPlugin(Star):
         opt_actions = await self.prompt_optimizer.optimize(user_input, count=1)
         final_prompt, extra_kwargs = self.persona_manager.build_persona_prompt(opt_actions[0] if opt_actions else user_input)
         extra_kwargs.update(kwargs)
+        param_count = len(kwargs)
         
         # 🔴 调用本脚本专用列表字段，底层依然可以拿单数爽
         persona_ref = self.plugin_config.persona_ref_images
@@ -406,7 +408,7 @@ class OmniDrawPlugin(Star):
             
         msg = f"{MessageEmoji.INFO} 正在为「{self.plugin_config.persona_name}」生成自拍，请稍候..."
         if self.plugin_config.verbose_report:
-            msg += f"\n[调试] 构建提示词: {final_prompt}\n[调试] 透传参数: {len(extra_kwargs)}个\n[调试] 识别参考图: {len(safe_refs) if safe_refs else 0}张"
+            msg += f"\n📝 构建提示词: {final_prompt}\n⚙️ 附加参数：{param_count} 个\n🖼️ 实际参考图：{len(safe_refs) if safe_refs else 0} 张"
         yield event.plain_result(msg)
         
         chain_to_use = "selfie" if "selfie" in self.plugin_config.chains else "text2img"
@@ -428,7 +430,7 @@ class OmniDrawPlugin(Star):
         
         msg = f"{MessageEmoji.INFO} 视频任务已提交后台渲染..."
         if self.plugin_config.verbose_report:
-            msg += f"\n[调试] 渲染提示词: {prompt}\n[调试] 识别首尾帧/参考图: {len(safe_refs) if safe_refs else 0}张"
+            msg += f"\n📝 渲染提示词: {prompt}\n⚙️ 附加参数：0 个\n🖼️ 参考图/首尾帧：{len(safe_refs) if safe_refs else 0} 张"
         yield event.plain_result(msg)
         
         asyncio.create_task(self.video_manager.background_task_runner(event, prompt, safe_refs))
