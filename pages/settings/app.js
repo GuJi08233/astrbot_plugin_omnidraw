@@ -2,7 +2,8 @@ const bridge = window.AstrBotPluginPage;
 
 let state = {
     permission_config: {}, persona_config: { persona_ref_image: [] }, optimizer_config: {}, router_config: {},
-    presets: [], providers: [], video_providers: [], verbose_report: false
+    presets: [], providers: [], video_providers: [], verbose_report: false,
+    gallery: [], selected_gallery_files: new Set() // ✨ 新增：图库状态
 };
 
 function showToast(message, type = 'success') {
@@ -13,6 +14,41 @@ function showToast(message, type = 'success') {
     container.appendChild(toast);
     setTimeout(() => toast.classList.add('toast-fadeout'), 2500);
     setTimeout(() => toast.remove(), 2800);
+}
+
+// ✨ 图库懒加载引擎：防止一次性加载上百张图卡死浏览器
+async function renderGallery() {
+    const container = document.getElementById('gallery-container');
+    if(!container) return;
+    if(state.gallery.length === 0) {
+        container.innerHTML = '<div class="empty-gallery">当前本地图库 (temp_images) 为空，快去让 AI 生成第一张图片吧！</div>';
+        return;
+    }
+    
+    container.innerHTML = state.gallery.map(filename => `
+        <div class="gallery-item ${state.selected_gallery_files.has(filename)?'selected':''}" data-file="${filename}">
+            <img class="gallery-img" src="" alt="loading..." id="img-${filename.replace(/\./g,'_')}">
+            <div class="gallery-info">${filename}</div>
+        </div>
+    `).join('');
+
+    for(const filename of state.gallery) {
+        try {
+            const imgEl = document.getElementById(`img-${filename.replace(/\./g,'_')}`);
+            if(!imgEl) continue;
+            const res = await bridge.apiGet("get_gallery_image", { filename });
+            if(res && res.base64) imgEl.src = res.base64;
+        } catch(e) {}
+    }
+}
+
+async function fetchGallery() {
+    try {
+        const files = await bridge.apiGet("get_gallery_list");
+        state.gallery = Array.isArray(files) ? files : [];
+        state.selected_gallery_files.clear();
+        renderGallery();
+    } catch(e) { showToast("读取图库失败", "error"); }
 }
 
 function renderSelectors() {
@@ -123,6 +159,9 @@ async function init() {
     renderVideoProviders();
     setupEventDelegation();
     renderPersonaImages();
+
+    // ✨ 初始拉取图库数据
+    fetchGallery();
 }
 
 function bindBasicFields() {
@@ -195,14 +234,12 @@ function renderProviders() {
                                 ${m} <span class="chip-del" data-action="del-prov-model" data-index="${i}" data-midx="${mIdx}">×</span>
                             </div>
                         `).join('')}
-                        ${(p.available_models || []).length === 0 ? '<span class="empty-hint">暂无模型，请在下方添加</span>' : ''}
                     </div>
                     <div style="display:flex; gap:10px;">
                         <input type="text" class="input-glass" id="new-model-img-${i}" placeholder="输入新模型名称 (如 dall-e-3)" style="flex:1;">
                         <button data-action="add-prov-model" data-index="${i}" class="btn-glass-secondary">添加模型</button>
                     </div>
                 </div>
-
                 <div class="form-group"><label>请求超时</label><input type="number" class="input-glass" value="${p.timeout}" data-sync="prov-time" data-index="${i}"></div>
                 <div class="form-group full-width"><label>API Keys</label><textarea class="input-glass" rows="1" data-sync="prov-keys" data-index="${i}">${p.api_keys}</textarea></div>
             </div>
@@ -236,14 +273,12 @@ function renderVideoProviders() {
                                 ${m} <span class="chip-del" data-action="del-vid-model" data-index="${i}" data-midx="${mIdx}">×</span>
                             </div>
                         `).join('')}
-                        ${(p.available_models || []).length === 0 ? '<span class="empty-hint">暂无模型，请在下方添加</span>' : ''}
                     </div>
                     <div style="display:flex; gap:10px;">
                         <input type="text" class="input-glass" id="new-model-vid-${i}" placeholder="输入视频模型名称" style="flex:1;">
                         <button data-action="add-vid-model" data-index="${i}" class="btn-glass-secondary">添加模型</button>
                     </div>
                 </div>
-
                 <div class="form-group"><label>请求超时</label><input type="number" class="input-glass" value="${p.timeout}" data-sync="vid-time" data-index="${i}"></div>
                 <div class="form-group full-width"><label>API Keys</label><textarea class="input-glass" rows="1" data-sync="vid-keys" data-index="${i}">${p.api_keys}</textarea></div>
             </div>
@@ -279,13 +314,16 @@ function setupEventDelegation() {
         }
     };
 
-    document.body.addEventListener('click', (e) => {
+    document.body.addEventListener('click', async (e) => {
         const navItem = e.target.closest('.nav-item');
         if (navItem) {
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
             navItem.classList.add('active');
             document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
             document.getElementById(navItem.getAttribute('data-target')).classList.add('active');
+            
+            // ✨ 当点击图库按钮时，强制拉取一次最新数据
+            if (navItem.getAttribute('data-target') === 'tab-gallery') fetchGallery();
             return;
         }
 
@@ -313,13 +351,42 @@ function setupEventDelegation() {
 
         if (e.target.closest('#persona-upload-trigger')) fileInput.click();
 
-        // 🔴 终极修复：使用 [data-action] 而不仅是 button，这样就能拦截到属于 <span> 的关闭按钮了！
+        // ✨ 处理图库图片的选中高亮逻辑
+        const galleryItem = e.target.closest('.gallery-item');
+        if (galleryItem) {
+            const filename = galleryItem.getAttribute('data-file');
+            if (state.selected_gallery_files.has(filename)) state.selected_gallery_files.delete(filename);
+            else state.selected_gallery_files.add(filename);
+            galleryItem.classList.toggle('selected');
+            return;
+        }
+
         const btn = e.target.closest('[data-action]');
         if (!btn) return;
         const act = btn.getAttribute('data-action');
         const idx = parseInt(btn.getAttribute('data-index'), 10);
 
         if (act === 'save-config') saveConfig(btn);
+        
+        // ✨ 图库操作按钮事件
+        if (act === 'gallery-select-all') {
+            const allSelected = state.selected_gallery_files.size === state.gallery.length;
+            if (allSelected) state.selected_gallery_files.clear();
+            else state.gallery.forEach(f => state.selected_gallery_files.add(f));
+            renderGallery();
+        }
+        
+        if (act === 'gallery-delete-selected') {
+            if (state.selected_gallery_files.size === 0) return showToast("请先点击选中要删除的图片", "error");
+            if (!confirm(`确定要彻底物理删除这 ${state.selected_gallery_files.size} 张图片吗？该操作不可恢复！`)) return;
+            try {
+                const res = await bridge.apiPost("delete_gallery_images", { filenames: Array.from(state.selected_gallery_files) });
+                if (res.success) {
+                    showToast(`成功销毁 ${res.count} 张图片！`);
+                    fetchGallery(); // 重新加载列表
+                }
+            } catch(err) { showToast("删除异常", "error"); }
+        }
         
         if (act === 'add-preset') { state.presets.push({name:"", prompt:""}); renderPresets(); animateAdd('presets-container'); }
         if (act === 'del-preset') { animateDel('presets-container', state.presets, idx, renderPresets); }
@@ -386,8 +453,6 @@ function setupEventDelegation() {
         fileInput.value = '';
     });
 
-    // 🔴 终极修复：为了防止因为模型删改导致 UI 重绘（renderProviders）时把未保存的文字清空，
-    // 我们必须保留这个双向绑定的实时同步机制！
     document.body.addEventListener('input', (e) => {
         const input = e.target;
         if (!input.hasAttribute('data-sync')) return;
