@@ -675,7 +675,15 @@ class OmniDrawPlugin(Star):
         size: str = "",
         extra_params: str = "",
     ) -> str:
-        """以此 AI 助理的固定人设拍摄自拍。"""
+        """
+        以此 AI 助理的固定人设拍摄自拍。
+        Args:
+            action (string): 动作、姿态、服装、场景或画面描述。
+            count (int): 需要生成的图片数量。默认为 1。
+            aspect_ratio (string): 宽高比例，例如 1:1、3:4、9:16、16:9。
+            size (string): 分辨率或尺寸参数，例如 1024x1024。
+            extra_params (string): 附加模型参数透传，格式为 --key value，可同时传多个。
+        """
         if not self._has_permission(event):
             return "无权限调用。"
 
@@ -724,7 +732,15 @@ class OmniDrawPlugin(Star):
         size: str = "",
         extra_params: str = "",
     ) -> str:
-        """AI 画图工具。当用户提出明确的画面要求时调用。"""
+        """
+        AI 画图工具。当用户提出明确的画面要求你画出来时调用此工具。
+        Args:
+            prompt (string): 图片提示词，描述主体、风格、场景、构图和细节。
+            count (int): 图片数量。默认为 1。
+            aspect_ratio (string): 宽高比例，例如 1:1、3:4、9:16、16:9。
+            size (string): 分辨率或尺寸参数，例如 1024x1024。
+            extra_params (string): 其他模型参数透传，格式为 --key value，可同时传多个。
+        """
         if not self._has_permission(event):
             return "无权限调用。"
 
@@ -764,7 +780,15 @@ class OmniDrawPlugin(Star):
         size: str = "",
         extra_params: str = "",
     ) -> str:
-        """AI 视频生成工具。当用户要求生成一段视频时调用。"""
+        """
+        AI 视频生成工具。当用户要求生成一段视频时调用。
+        Args:
+            prompt (string): 视频提示词，描述画面、动作、镜头运动、时长感和风格。
+            count (int): 视频数量。默认为 1。
+            aspect_ratio (string): 宽高比例，例如 9:16、16:9、1:1。
+            size (string): 分辨率或尺寸参数，例如 1280x720、1920x1080。
+            extra_params (string): 附加参数，透传至底层视频引擎，格式为 --key value。
+        """
         if not self._has_permission(event):
             return "无权限调用。"
 
