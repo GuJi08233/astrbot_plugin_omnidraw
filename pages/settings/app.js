@@ -2,8 +2,7 @@ const bridge = window.AstrBotPluginPage;
 
 let state = {
     permission_config: {}, persona_config: { persona_ref_image: [] }, optimizer_config: {}, router_config: {},
-    presets: [], providers: [], video_providers: [], verbose_report: false,
-    gallery: [], selected_gallery_files: new Set()
+    presets: [], providers: [], video_providers: [], verbose_report: false
 };
 
 function showToast(message, type = 'success') {
@@ -14,107 +13,6 @@ function showToast(message, type = 'success') {
     container.appendChild(toast);
     setTimeout(() => toast.classList.add('toast-fadeout'), 2500);
     setTimeout(() => toast.remove(), 2800);
-}
-
-// ✨ 完美原比例图库构建器：圆滑蓝边直接附着在外壳 Wrapper，自带骨架屏
-async function buildGalleryDOM() {
-    const container = document.getElementById('gallery-container');
-    if(!container) return;
-    
-    container.innerHTML = ''; 
-    
-    if(state.gallery.length === 0) {
-        container.innerHTML = '<span style="color: var(--text-muted); font-size: 14px; padding: 20px;">图库为空，快去生成第一张照片吧！</span>';
-        return;
-    }
-    
-    state.gallery.forEach((filename, idx) => {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'image-preview-wrapper gallery-item-wrapper';
-        wrapper.setAttribute('data-file', filename);
-        // ✨ 圆角 12px 作用于卡片外壳，蓝边也是圆的！
-        wrapper.style.cssText = 'position: relative; cursor: pointer; transition: all 0.2s; border: 3px solid transparent; border-radius: 12px; background: rgba(0,0,0,0.05); overflow: hidden;';
-
-        wrapper.innerHTML = `
-            <div class="gallery-skeleton" id="skel-${idx}"></div>
-            <img src="" class="image-preview gallery-target-img" id="gallery-img-${idx}" alt="图片" 
-                 style="display: none; height: 140px; width: auto; max-width: 300px; object-fit: contain; transition: opacity 0.2s ease;">
-            <button class="btn-del-img" data-action="gallery-delete-single" data-file="${filename}" style="display: none; z-index: 20; position: absolute; top: -10px; right: -10px;" id="del-btn-${idx}">×</button>
-        `;
-        container.appendChild(wrapper);
-    });
-
-    for(let idx = 0; idx < state.gallery.length; idx++) {
-        const filename = state.gallery[idx];
-        try {
-            const imgEl = document.getElementById(`gallery-img-${idx}`);
-            const skelEl = document.getElementById(`skel-${idx}`);
-            const btnEl = document.getElementById(`del-btn-${idx}`);
-            if(!imgEl) continue;
-            
-            const res = await bridge.apiPost("get_gallery_image", { filename: filename });
-            if(res && res.base64) {
-                imgEl.setAttribute('src', res.base64);
-                // 数据就位，隐藏骨架展现原图
-                skelEl.style.display = 'none';
-                imgEl.style.display = 'block';
-                btnEl.style.display = 'flex';
-                
-                // 恢复选中 UI
-                if(state.selected_gallery_files.has(filename)) updateGallerySelectionUI();
-            }
-        } catch(e) {}
-    }
-}
-
-// ✨ 更新选中 UI：边框圆角柔和，打勾标志清爽
-function updateGallerySelectionUI() {
-    document.querySelectorAll('.gallery-item-wrapper').forEach(wrapper => {
-        const filename = wrapper.getAttribute('data-file');
-        const isSelected = state.selected_gallery_files.has(filename);
-        
-        if (isSelected) {
-            wrapper.style.border = '3px solid #006FEE';
-            wrapper.style.transform = 'scale(0.95)';
-            wrapper.style.boxShadow = '0 0 15px rgba(0, 111, 238, 0.4)';
-            
-            const img = wrapper.querySelector('.gallery-target-img');
-            if (img) img.style.opacity = '0.7';
-
-            if (!wrapper.querySelector('.check-mark')) {
-                const check = document.createElement('div');
-                check.className = 'check-mark';
-                check.style.cssText = 'position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #006FEE; color: white; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 10; pointer-events: none;';
-                check.innerText = '✓';
-                wrapper.appendChild(check);
-            }
-        } else {
-            wrapper.style.border = '3px solid transparent';
-            wrapper.style.transform = 'scale(1)';
-            wrapper.style.boxShadow = 'none';
-            
-            const img = wrapper.querySelector('.gallery-target-img');
-            if (img) img.style.opacity = '1';
-            
-            const check = wrapper.querySelector('.check-mark');
-            if(check) check.remove();
-        }
-    });
-}
-
-async function fetchGallery() {
-    const statusText = document.getElementById('gallery-status');
-    if(statusText) {
-        statusText.style.display = 'block';
-        statusText.innerText = '读取图库中...';
-    }
-    
-    try {
-        const res = await bridge.apiPost("get_gallery_list", {});
-        state.gallery = (res && Array.isArray(res.files)) ? res.files : [];
-        state.selected_gallery_files.clear();
-        await buildGalleryDOM();
-    } catch(e) { showToast("读取图库失败", "error"); }
 }
 
 function renderSelectors() {
@@ -139,7 +37,7 @@ function renderSelectors() {
 function renderPersonaImages() {
     const container = document.getElementById('persona-upload-container');
     if(!container) return;
-    container.querySelectorAll('.image-preview-wrapper:not(.gallery-item-wrapper)').forEach(el => el.remove());
+    container.querySelectorAll('.image-preview-wrapper').forEach(el => el.remove());
     const trigger = document.getElementById('persona-upload-trigger');
     const images = state.persona_config.persona_ref_image || [];
     images.forEach((url, idx) => {
@@ -225,8 +123,6 @@ async function init() {
     renderVideoProviders();
     setupEventDelegation();
     renderPersonaImages();
-    
-    fetchGallery();
 }
 
 function bindBasicFields() {
@@ -299,12 +195,14 @@ function renderProviders() {
                                 ${m} <span class="chip-del" data-action="del-prov-model" data-index="${i}" data-midx="${mIdx}">×</span>
                             </div>
                         `).join('')}
+                        ${(p.available_models || []).length === 0 ? '<span class="empty-hint">暂无模型，请在下方添加</span>' : ''}
                     </div>
                     <div style="display:flex; gap:10px;">
                         <input type="text" class="input-glass" id="new-model-img-${i}" placeholder="输入新模型名称 (如 dall-e-3)" style="flex:1;">
                         <button data-action="add-prov-model" data-index="${i}" class="btn-glass-secondary">添加模型</button>
                     </div>
                 </div>
+
                 <div class="form-group"><label>请求超时</label><input type="number" class="input-glass" value="${p.timeout}" data-sync="prov-time" data-index="${i}"></div>
                 <div class="form-group full-width"><label>API Keys</label><textarea class="input-glass" rows="1" data-sync="prov-keys" data-index="${i}">${p.api_keys}</textarea></div>
             </div>
@@ -338,12 +236,14 @@ function renderVideoProviders() {
                                 ${m} <span class="chip-del" data-action="del-vid-model" data-index="${i}" data-midx="${mIdx}">×</span>
                             </div>
                         `).join('')}
+                        ${(p.available_models || []).length === 0 ? '<span class="empty-hint">暂无模型，请在下方添加</span>' : ''}
                     </div>
                     <div style="display:flex; gap:10px;">
                         <input type="text" class="input-glass" id="new-model-vid-${i}" placeholder="输入视频模型名称" style="flex:1;">
                         <button data-action="add-vid-model" data-index="${i}" class="btn-glass-secondary">添加模型</button>
                     </div>
                 </div>
+
                 <div class="form-group"><label>请求超时</label><input type="number" class="input-glass" value="${p.timeout}" data-sync="vid-time" data-index="${i}"></div>
                 <div class="form-group full-width"><label>API Keys</label><textarea class="input-glass" rows="1" data-sync="vid-keys" data-index="${i}">${p.api_keys}</textarea></div>
             </div>
@@ -379,14 +279,13 @@ function setupEventDelegation() {
         }
     };
 
-    document.body.addEventListener('click', async (e) => {
+    document.body.addEventListener('click', (e) => {
         const navItem = e.target.closest('.nav-item');
         if (navItem) {
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
             navItem.classList.add('active');
             document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
             document.getElementById(navItem.getAttribute('data-target')).classList.add('active');
-            if (navItem.getAttribute('data-target') === 'tab-gallery') fetchGallery();
             return;
         }
 
@@ -414,73 +313,13 @@ function setupEventDelegation() {
 
         if (e.target.closest('#persona-upload-trigger')) fileInput.click();
 
-        // ✨ 图片选中分离：只要没点到 X 删除按钮，就是切换选中状态
-        const galleryItem = e.target.closest('.gallery-item-wrapper');
-        const isDelBtn = e.target.closest('.btn-del-img');
-        
-        if (galleryItem && !isDelBtn) {
-            const filename = galleryItem.getAttribute('data-file');
-            if (state.selected_gallery_files.has(filename)) state.selected_gallery_files.delete(filename);
-            else state.selected_gallery_files.add(filename);
-            updateGallerySelectionUI();
-            return;
-        }
-
+        // 🔴 终极修复：使用 [data-action] 而不仅是 button，这样就能拦截到属于 <span> 的关闭按钮了！
         const btn = e.target.closest('[data-action]');
         if (!btn) return;
         const act = btn.getAttribute('data-action');
         const idx = parseInt(btn.getAttribute('data-index'), 10);
 
         if (act === 'save-config') saveConfig(btn);
-        
-        if (act === 'gallery-select-all') {
-            const allSelected = state.selected_gallery_files.size === state.gallery.length;
-            if (allSelected) state.selected_gallery_files.clear();
-            else state.gallery.forEach(f => state.selected_gallery_files.add(f));
-            updateGallerySelectionUI();
-        }
-        
-        // ✨ 单个物理删除：学习人设参考图机制，删除成功直接消散
-        if (act === 'gallery-delete-single') {
-            const filename = btn.getAttribute('data-file');
-            const wrapperEl = btn.closest('.gallery-item-wrapper');
-            try {
-                // 双重载荷结构确保后端能吃到数据
-                const res = await bridge.apiPost("delete_gallery_images", { filenames: [filename], files: filename });
-                if (res && res.success) {
-                    state.selected_gallery_files.delete(filename);
-                    wrapperEl.style.transform = 'scale(0.8)';
-                    wrapperEl.style.opacity = '0';
-                    setTimeout(() => wrapperEl.remove(), 200);
-                } else showToast("删除指令未能执行", "error");
-            } catch(err) { showToast("删除异常", "error"); }
-        }
-
-        // ✨ 批量物理删除：强力双重参数格式，百分百不漏
-        if (act === 'gallery-delete-selected') {
-            if (state.selected_gallery_files.size === 0) return showToast("请先点击图片进行选中！", "error");
-            if (!confirm(`确定要彻底删除这 ${state.selected_gallery_files.size} 张图片吗？`)) return;
-            
-            const originText = btn.innerHTML;
-            btn.disabled = true;
-            btn.innerHTML = "删除中...";
-            try {
-                const fileArray = Array.from(state.selected_gallery_files);
-                const fileString = fileArray.join(",");
-                // 💡 双保险：同时发数组和字符串
-                const payload = { filenames: fileArray, files: fileString };
-                const res = await bridge.apiPost("delete_gallery_images", payload);
-                if (res && res.success) {
-                    showToast(`成功粉碎 ${res.count} 张图片！`);
-                    state.selected_gallery_files.clear();
-                    await fetchGallery(); // 重新拉取
-                } else {
-                    showToast("后端返回删除失败", "error");
-                }
-            } catch(err) { showToast("删除通讯异常", "error"); }
-            btn.disabled = false;
-            btn.innerHTML = originText;
-        }
         
         if (act === 'add-preset') { state.presets.push({name:"", prompt:""}); renderPresets(); animateAdd('presets-container'); }
         if (act === 'del-preset') { animateDel('presets-container', state.presets, idx, renderPresets); }
@@ -512,7 +351,7 @@ function setupEventDelegation() {
             }
         }
         if (act === 'del-prov-model') {
-            e.stopPropagation(); 
+            e.stopPropagation(); // 防止触发父级 div 的点击事件
             const mIdx = parseInt(btn.getAttribute('data-midx'), 10);
             const removed = state.providers[idx].available_models.splice(mIdx, 1)[0];
             if(state.providers[idx].model === removed) state.providers[idx].model = state.providers[idx].available_models[0] || "";
@@ -547,6 +386,8 @@ function setupEventDelegation() {
         fileInput.value = '';
     });
 
+    // 🔴 终极修复：为了防止因为模型删改导致 UI 重绘（renderProviders）时把未保存的文字清空，
+    // 我们必须保留这个双向绑定的实时同步机制！
     document.body.addEventListener('input', (e) => {
         const input = e.target;
         if (!input.hasAttribute('data-sync')) return;
@@ -581,8 +422,10 @@ async function saveConfig(btn) {
     const originalText = btn.innerHTML;
     btn.innerHTML = `<span class="spinner">↻</span> 部署中...`;
     
+    // 强制读取上方固定表单
     readBasicFields();
 
+    // 开启终极快照捕捉，双保险保证不漏数据
     const getDOMValues = (selector) => Array.from(document.querySelectorAll(selector)).map(el => el.value);
     
     const provIds = getDOMValues('[data-sync="prov-id"]');
