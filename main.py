@@ -11,7 +11,7 @@ import aiohttp
 import asyncio
 import re
 import json
-import shutil # ✨ 引入文件拷贝以支持图库留档
+import shutil
 from typing import AsyncGenerator, Any
 
 from quart import jsonify, request
@@ -52,7 +52,6 @@ class OmniDrawPlugin(Star):
         self.data_dir = os.path.join(base_dir, "data", "plugin_data", "astrbot_plugin_omnidraw")
         os.makedirs(self.data_dir, exist_ok=True)
         
-        # ✨ 图库专属目录
         self.temp_images_dir = os.path.join(self.data_dir, "temp_images")
         os.makedirs(self.temp_images_dir, exist_ok=True)
         
@@ -74,22 +73,20 @@ class OmniDrawPlugin(Star):
         self.video_manager = VideoManager(self.plugin_config)
         self.prompt_optimizer = PromptOptimizer(self.plugin_config) 
 
-        # ✨ 全部补全了 'desc' 参数，解决缺失参数报错问题
         self.context.register_web_api("/astrbot_plugin_omnidraw/get_config", self.get_config_handler, ["GET"], "获取配置")
         self.context.register_web_api("/astrbot_plugin_omnidraw/save_config", self.save_config_handler, ["POST"], "保存配置")
-        
         self.context.register_web_api("/astrbot_plugin_omnidraw/get_gallery_list", self.get_gallery_list, ["GET"], "拉取图库列表")
         self.context.register_web_api("/astrbot_plugin_omnidraw/get_gallery_image", self.get_gallery_image, ["GET"], "加载单张图片")
         self.context.register_web_api("/astrbot_plugin_omnidraw/delete_gallery_images", self.delete_gallery_images, ["POST"], "批量删除图片")
 
     # ==========================================
-    # ✨ 生图图库后端接口
+    # ✨ 生图图库后端接口 (暴力解析，绝不漏单)
     # ==========================================
     async def get_gallery_list(self):
         if not os.path.exists(self.temp_images_dir): return jsonify([])
         files = [f for f in os.listdir(self.temp_images_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
         files.sort(key=lambda x: os.path.getmtime(os.path.join(self.temp_images_dir, x)), reverse=True)
-        return jsonify(files[:300]) # 保护机制：最多拉取300张
+        return jsonify(files[:300]) 
 
     async def get_gallery_image(self):
         filename = request.args.get("filename")
@@ -105,18 +102,33 @@ class OmniDrawPlugin(Star):
             return jsonify({"error": str(e)})
 
     async def delete_gallery_images(self):
-        # 增加 silent=True，防前端传递空报文导致 JSON 解析崩溃
-        data = await request.get_json(silent=True) or {}
+        # ✨ 终极防空数据：暴力从 raw_data 解析 JSON，防止 Quart 框架吞掉 payload
+        try:
+            raw_data = await request.get_data()
+            if raw_data:
+                data = json.loads(raw_data.decode("utf-8"))
+            else:
+                data = await request.get_json(silent=True) or {}
+        except Exception as e:
+            logger.error(f"[OmniDraw] JSON 解析失败: {e}")
+            data = {}
+
         filenames = data.get("filenames", [])
+        if not filenames:
+            return jsonify({"success": False, "message": "未能识别要删除的文件"})
+
         count = 0
         for f in filenames:
-            safe_f = os.path.basename(f) # 严格防御路径穿越
+            safe_f = os.path.basename(f)
             path = os.path.join(self.temp_images_dir, safe_f)
             if os.path.exists(path):
                 try:
                     os.remove(path)
                     count += 1
-                except: pass
+                except Exception as e:
+                    logger.error(f"[OmniDraw] 删除图片 {safe_f} 失败: {e}")
+                    pass
+                    
         return jsonify({"success": True, "count": count})
 
     # ==========================================
@@ -137,7 +149,6 @@ class OmniDrawPlugin(Star):
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.raw_config, f, ensure_ascii=False, indent=4)
         except Exception as e:
-            logger.error(f"[OmniDraw] 配置文件持久化写入失败: {e}")
             return jsonify({"success": False, "message": f"硬盘写入失败: {e}"})
         
         if hasattr(self.context, 'update_config'):
@@ -254,7 +265,6 @@ class OmniDrawPlugin(Star):
             return (match.group(1) or "").strip()
         return fallback.strip()
 
-    # ✨ 核心拦截升级为 async 异步：所有的图，发送前强制本地归档一份到 temp_images
     async def _create_image_component(self, image_url: str) -> Image:
         filename = f"img_{int(time.time()*1000)}_{uuid.uuid4().hex[:4]}.png"
         file_path = os.path.join(self.temp_images_dir, filename)
@@ -273,14 +283,12 @@ class OmniDrawPlugin(Star):
                             return Image.fromFileSystem(file_path)
                             
             elif os.path.exists(image_url):
-                # 已经是本地图了也强制拷一份进图库
                 shutil.copy(image_url, file_path)
                 return Image.fromFileSystem(file_path)
                 
         except Exception as e:
             logger.error(f"[OmniDraw] 保存图片至 temp_images 失败: {e}")
             
-        # 容错：如果保存失败，直接降级返回，不影响用户收到图片
         return Image.fromURL(image_url) if image_url.startswith("http") else Image.fromFileSystem(image_url)
 
     def _get_active_provider(self, chain_type: str = "text2img"):
@@ -412,14 +420,13 @@ class OmniDrawPlugin(Star):
         
         msg = f"{MessageEmoji.PAINTING} 收到灵感，正在绘制..."
         if self.plugin_config.verbose_report:
-            msg += f"\n[调试] 宏对应提示词: {preset_prompt}\n[调试] 识别参考图: {len(safe_refs) if safe_refs else 0}张"
+            msg += f"\n📝 宏对应提示词: {preset_prompt}\n🖼️ 实际参考图：{len(safe_refs) if safe_refs else 0} 张"
         yield event.plain_result(msg)
         
         try:
             async with aiohttp.ClientSession() as session:
                 chain_manager = ChainManager(self.plugin_config, session)
                 image_url = await chain_manager.run_chain("text2img", preset_prompt, user_refs=safe_refs)
-            # ✨ 使用 await 调用升级版拦截器
             yield event.chain_result([await self._create_image_component(image_url)])
         except Exception as e:
             yield event.plain_result(f"💥 绘制失败: {e}")
@@ -437,17 +444,17 @@ class OmniDrawPlugin(Star):
             
         safe_refs = await self._process_and_save_images(raw_refs)
         prompt, kwargs = self.cmd_parser.parse(message)
+        param_count = len(kwargs)
         if safe_refs: kwargs["user_refs"] = safe_refs
             
         msg = f"{MessageEmoji.PAINTING} 收到灵感，正在绘制..."
         if self.plugin_config.verbose_report:
-            msg += f"\n[调试] 最终提示词: {prompt}\n[调试] 透传参数: {len(kwargs)}个\n[调试] 识别参考图: {len(safe_refs) if safe_refs else 0}张"
+            msg += f"\n📝 最终提示词: {prompt}\n⚙️ 附加参数：{param_count} 个\n🖼️ 实际参考图：{len(safe_refs) if safe_refs else 0} 张"
         yield event.plain_result(msg)
         
         async with aiohttp.ClientSession() as session:
             chain_manager = ChainManager(self.plugin_config, session)
             image_url = await chain_manager.run_chain("text2img", prompt, **kwargs)
-        # ✨ 使用 await 调用升级版拦截器
         yield event.chain_result([await self._create_image_component(image_url)])
 
     @filter.command("自拍")
@@ -462,6 +469,7 @@ class OmniDrawPlugin(Star):
         opt_actions = await self.prompt_optimizer.optimize(user_input, count=1)
         final_prompt, extra_kwargs = self.persona_manager.build_persona_prompt(opt_actions[0] if opt_actions else user_input)
         extra_kwargs.update(kwargs)
+        param_count = len(kwargs)
         
         persona_ref = self.plugin_config.persona_ref_images
         raw_refs = self._get_event_images(event)
@@ -475,14 +483,13 @@ class OmniDrawPlugin(Star):
             
         msg = f"{MessageEmoji.INFO} 正在为「{self.plugin_config.persona_name}」生成自拍，请稍候..."
         if self.plugin_config.verbose_report:
-            msg += f"\n[调试] 构建提示词: {final_prompt}\n[调试] 透传参数: {len(extra_kwargs)}个\n[调试] 识别参考图: {len(safe_refs) if safe_refs else 0}张"
+            msg += f"\n📝 构建提示词: {final_prompt}\n⚙️ 附加参数：{param_count} 个\n🖼️ 实际参考图：{len(safe_refs) if safe_refs else 0} 张"
         yield event.plain_result(msg)
         
         chain_to_use = "selfie" if "selfie" in self.plugin_config.chains else "text2img"
         async with aiohttp.ClientSession() as session:
             chain_manager = ChainManager(self.plugin_config, session)
             image_url = await chain_manager.run_chain(chain_to_use, final_prompt, **extra_kwargs)
-        # ✨ 使用 await 调用升级版拦截器
         yield event.chain_result([await self._create_image_component(image_url)])
 
     @filter.command("视频")
@@ -498,7 +505,7 @@ class OmniDrawPlugin(Star):
         
         msg = f"{MessageEmoji.INFO} 视频任务已提交后台渲染..."
         if self.plugin_config.verbose_report:
-            msg += f"\n[调试] 渲染提示词: {prompt}\n[调试] 识别首尾帧/参考图: {len(safe_refs) if safe_refs else 0}张"
+            msg += f"\n📝 渲染提示词: {prompt}\n⚙️ 附加参数：0 个\n🖼️ 参考图/首尾帧：{len(safe_refs) if safe_refs else 0} 张"
         yield event.plain_result(msg)
         
         asyncio.create_task(self.video_manager.background_task_runner(event, prompt, safe_refs))
@@ -510,12 +517,20 @@ class OmniDrawPlugin(Star):
     async def tool_generate_selfie(self, event: AstrMessageEvent, action: str, count: int = 1, aspect_ratio: str = "", size: str = "", extra_params: str = "") -> str:
         """
         以此 AI 助理的固定人设拍摄自拍。
+        Args:
+            action (string): 动作和场景描述。
+            count (int): 需要生成的图片数量。默认为1。
+            aspect_ratio (string): 宽高比例。
+            size (string): 分辨率。
+            extra_params (string): 附加模型参数透传。
         """
         if not self._has_permission(event): return "无权限调用。"
         try:
             count = min(max(1, self._normalize_count(count)), self.plugin_config.max_batch_count or 10)
             optimized_actions = await self.prompt_optimizer.optimize(action, count)
+            
             persona_ref = self.plugin_config.persona_ref_images
+            
             raw_refs = self._get_event_images(event)
             target_refs = raw_refs if raw_refs else persona_ref
             safe_refs = await self._process_and_save_images(target_refs)
@@ -543,7 +558,6 @@ class OmniDrawPlugin(Star):
             valid_urls = [u for u in results if isinstance(u, str) and u]
             if not valid_urls: raise Exception("所有绘图节点请求失败")
             for url in valid_urls:
-                # ✨ 使用 await 调用升级版拦截器
                 await event.send(event.chain_result([await self._create_image_component(url)]))
                 await asyncio.sleep(0.5) 
             return f"系统提示：已成功生成并下发了 {len(valid_urls)} 张图。"
@@ -553,7 +567,13 @@ class OmniDrawPlugin(Star):
     @llm_tool(name="generate_image")
     async def tool_generate_image(self, event: AstrMessageEvent, prompt: str, count: int = 1, aspect_ratio: str = "", size: str = "", extra_params: str = "") -> str:
         """
-        AI 画图工具。
+        AI 画图工具。当用户提出明确的画面要求你画出来时调用此工具。
+        Args:
+            prompt (string): 提示词。
+            count (int): 图片数量。默认为1。
+            aspect_ratio (string): 宽高比例。
+            size (string): 分辨率。
+            extra_params (string): 其他参数。
         """
         if not self._has_permission(event): return "无权限调用。"
         try:
@@ -577,7 +597,6 @@ class OmniDrawPlugin(Star):
             valid_urls = [u for u in results if isinstance(u, str) and u]
             if not valid_urls: raise Exception("所有绘图节点请求失败")
             for url in valid_urls:
-                # ✨ 使用 await 调用升级版拦截器
                 await event.send(event.chain_result([await self._create_image_component(url)]))
                 await asyncio.sleep(0.5) 
             return f"系统提示：已成功下发 {len(valid_urls)} 张图。"
@@ -587,7 +606,13 @@ class OmniDrawPlugin(Star):
     @llm_tool(name="generate_video")
     async def tool_generate_video(self, event: AstrMessageEvent, prompt: str, count: int = 1, aspect_ratio: str = "", size: str = "", extra_params: str = "") -> str:
         """
-        AI 视频生成工具。
+        AI 视频生成工具。当用户要求生成一段视频时调用。
+        Args:
+            prompt (string): 视频提示词。
+            count (int): 视频数量，默认为 1。
+            aspect_ratio (string): 宽高比例。
+            size (string): 分辨率。
+            extra_params (string): 附加参数，透传至底层引擎。
         """
         if not self._has_permission(event): return "无权限调用。"
         try:
