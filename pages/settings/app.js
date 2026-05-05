@@ -3,7 +3,7 @@ const bridge = window.AstrBotPluginPage;
 let state = {
     permission_config: {}, persona_config: { persona_ref_image: [] }, optimizer_config: {}, router_config: {},
     presets: [], providers: [], video_providers: [], verbose_report: false,
-    gallery: [], selected_gallery_files: new Set() // ✨ 新增：图库状态
+    gallery: [], selected_gallery_files: new Set() // ✨ 注入图库状态
 };
 
 function showToast(message, type = 'success') {
@@ -16,12 +16,12 @@ function showToast(message, type = 'success') {
     setTimeout(() => toast.remove(), 2800);
 }
 
-// ✨ 图库懒加载引擎：防止一次性加载上百张图卡死浏览器
+// ✨ 瀑布流图库渲染引擎 (懒加载 Base64)
 async function renderGallery() {
     const container = document.getElementById('gallery-container');
     if(!container) return;
     if(state.gallery.length === 0) {
-        container.innerHTML = '<div class="empty-gallery">当前本地图库 (temp_images) 为空，快去让 AI 生成第一张图片吧！</div>';
+        container.innerHTML = '<div class="empty-gallery">暂无历史生图 (temp_images)，快去生成第一张照片吧！</div>';
         return;
     }
     
@@ -159,9 +159,8 @@ async function init() {
     renderVideoProviders();
     setupEventDelegation();
     renderPersonaImages();
-
-    // ✨ 初始拉取图库数据
-    fetchGallery();
+    
+    fetchGallery(); // ✨ 初始拉取图库数据
 }
 
 function bindBasicFields() {
@@ -314,7 +313,7 @@ function setupEventDelegation() {
         }
     };
 
-    document.body.addEventListener('click', async (e) => {
+    document.body.addEventListener('click', async (e) => { // ✨ 升级为 async 以支持图库接口
         const navItem = e.target.closest('.nav-item');
         if (navItem) {
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -322,7 +321,7 @@ function setupEventDelegation() {
             document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
             document.getElementById(navItem.getAttribute('data-target')).classList.add('active');
             
-            // ✨ 当点击图库按钮时，强制拉取一次最新数据
+            // ✨ 当切换到图库时强制刷新
             if (navItem.getAttribute('data-target') === 'tab-gallery') fetchGallery();
             return;
         }
@@ -351,7 +350,7 @@ function setupEventDelegation() {
 
         if (e.target.closest('#persona-upload-trigger')) fileInput.click();
 
-        // ✨ 处理图库图片的选中高亮逻辑
+        // ✨ 处理图库图片的选中逻辑
         const galleryItem = e.target.closest('.gallery-item');
         if (galleryItem) {
             const filename = galleryItem.getAttribute('data-file');
@@ -377,13 +376,15 @@ function setupEventDelegation() {
         }
         
         if (act === 'gallery-delete-selected') {
-            if (state.selected_gallery_files.size === 0) return showToast("请先点击选中要删除的图片", "error");
+            if (state.selected_gallery_files.size === 0) return showToast("请先点击图片选中要删除的文件", "error");
             if (!confirm(`确定要彻底物理删除这 ${state.selected_gallery_files.size} 张图片吗？该操作不可恢复！`)) return;
             try {
                 const res = await bridge.apiPost("delete_gallery_images", { filenames: Array.from(state.selected_gallery_files) });
-                if (res.success) {
+                if (res && res.success) {
                     showToast(`成功销毁 ${res.count} 张图片！`);
-                    fetchGallery(); // 重新加载列表
+                    fetchGallery(); // 删除后重新拉取
+                } else {
+                    showToast("删除请求未响应", "error");
                 }
             } catch(err) { showToast("删除异常", "error"); }
         }
@@ -418,7 +419,7 @@ function setupEventDelegation() {
             }
         }
         if (act === 'del-prov-model') {
-            e.stopPropagation(); // 防止触发父级 div 的点击事件
+            e.stopPropagation(); 
             const mIdx = parseInt(btn.getAttribute('data-midx'), 10);
             const removed = state.providers[idx].available_models.splice(mIdx, 1)[0];
             if(state.providers[idx].model === removed) state.providers[idx].model = state.providers[idx].available_models[0] || "";
@@ -487,10 +488,8 @@ async function saveConfig(btn) {
     const originalText = btn.innerHTML;
     btn.innerHTML = `<span class="spinner">↻</span> 部署中...`;
     
-    // 强制读取上方固定表单
     readBasicFields();
 
-    // 开启终极快照捕捉，双保险保证不漏数据
     const getDOMValues = (selector) => Array.from(document.querySelectorAll(selector)).map(el => el.value);
     
     const provIds = getDOMValues('[data-sync="prov-id"]');
