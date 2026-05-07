@@ -22,13 +22,22 @@ class VideoManager:
     def __init__(self, config: PluginConfig):
         self.config = config
 
-    def _get_active_video_provider(self) -> Optional[ProviderConfig]:
+    def _get_video_provider_chain(self) -> List[ProviderConfig]:
         chain = self.config.chains.get("video", [])
+        providers: List[ProviderConfig] = []
+        seen = set()
         for provider_id in chain:
+            if provider_id in seen:
+                continue
+            seen.add(provider_id)
             provider = self.config.get_video_provider(provider_id)
             if provider:
-                return provider
-        return self.config.video_providers[0] if self.config.video_providers else None
+                providers.append(provider)
+            else:
+                logger.warning(f"⚠️ 视频链路中的节点 [{provider_id}] 不存在。")
+        if providers:
+            return providers
+        return self.config.video_providers[:1] if self.config.video_providers else []
 
     def _get_api_key(self, provider: ProviderConfig) -> str:
         if not provider.api_keys:
@@ -219,22 +228,34 @@ class VideoManager:
         api_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         start_time = time.perf_counter()
-        provider = self._get_active_video_provider()
-        if not provider:
+        providers = self._get_video_provider_chain()
+        if not providers:
             await event.send(event.plain_result("❌ 抱歉，管理员尚未配置可用的视频渲染节点。"))
             return
 
+        last_error = ""
         try:
-            video_url = await self._fetch_video_from_api(provider, prompt, image_urls, api_kwargs)
-            elapsed = time.perf_counter() - start_time
-            logger.info(f"✅ [视频任务完成] 耗时: {elapsed:.2f} 秒，准备推送给用户。")
+            for index, provider in enumerate(providers, start=1):
+                logger.info(f"🎬 [视频链路] 正在尝试节点 [{provider.id}] ({index}/{len(providers)})。")
+                try:
+                    video_url = await self._fetch_video_from_api(provider, prompt, image_urls, api_kwargs)
+                    elapsed = time.perf_counter() - start_time
+                    logger.info(f"✅ [视频任务完成] 节点 [{provider.id}] 成功，耗时: {elapsed:.2f} 秒，准备推送给用户。")
 
-            if not video_url:
-                raise VideoTaskError("API 没有返回有效视频链接。")
-            await event.send(event.chain_result([
-                Plain(f"🎬 当当当！历时 {int(elapsed)} 秒，你要求的视频渲染完成啦：\n"),
-                Video.fromURL(video_url),
-            ]))
+                    if not video_url:
+                        raise VideoTaskError("API 没有返回有效视频链接。")
+                    await event.send(event.chain_result([
+                        Plain(f"🎬 当当当！历时 {int(elapsed)} 秒，你要求的视频渲染完成啦：\n"),
+                        Video.fromURL(video_url),
+                    ]))
+                    return
+                except VideoTaskError as exc:
+                    last_error = f"{provider.id}: {exc}"
+                    logger.error(f"❌ [视频链路] 节点 [{provider.id}] 失败: {exc}")
+                    if index < len(providers):
+                        logger.warning("🔄 正在切换到下一个视频备用节点...")
+
+            raise VideoTaskError(f"所有视频节点均失败。最后一次错误：{last_error or '未知错误'}")
         except VideoTaskError as exc:
             logger.error(f"❌ [后台任务] 视频生成失败: {exc}")
             try:

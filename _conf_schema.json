@@ -80,26 +80,26 @@
     }
   },
   "router_config": {
-    "description": "模型链路路由",
+    "description": "模型链路路由 / 备用节点",
     "type": "object",
-    "hint": "填写下方 Provider 的节点 ID。多个节点可用英文逗号或换行分隔，插件会按顺序兜底。",
+    "hint": "填写下方 Provider 的节点 ID。第一个节点为主节点，后续节点为备用节点；多个节点可用英文逗号、空格或换行分隔，插件会按填写顺序逐个尝试。",
     "items": {
       "chain_text2img": {
         "description": "文生图 / 图生图链路",
         "type": "string",
-        "hint": "默认 node_1。可填写多个图像节点 ID，例如：node_1,node_2。",
+        "hint": "默认 node_1。第一个 ID 是图像生成主节点，后面的 ID 是备用节点，例如：node_1,node_2,node_3。",
         "default": "node_1"
       },
       "chain_selfie": {
         "description": "自拍链路",
         "type": "string",
-        "hint": "默认 node_1。自拍会使用当前人设的参考图组。",
+        "hint": "默认 node_1。第一个 ID 是人设自拍主节点，后面的 ID 是备用节点；自拍会使用当前人设的参考图组。",
         "default": "node_1"
       },
       "chain_video": {
         "description": "视频链路",
         "type": "string",
-        "hint": "默认 video_node_1。可填写多个视频节点 ID。",
+        "hint": "默认 video_node_1。第一个 ID 是视频渲染主节点，后面的 ID 是备用节点，例如：video_node_1,video_node_2。",
         "default": "video_node_1"
       }
     }

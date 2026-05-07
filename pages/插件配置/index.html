@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#C1E6FF" />
     <title>OmniDraw Station</title>
     <link rel="icon" href="./logo.png" />
-    <link rel="stylesheet" href="./style.css?v=3.3.7" />
+    <link rel="stylesheet" href="./style.css?v=3.3.11" />
 </head>
 <body>
     <div class="app-shell">
@@ -240,17 +240,44 @@
                     <div class="route-stack">
                         <div class="route-row">
                             <label>图像生成</label>
-                            <div class="node-selector" id="sel-route-img"></div>
+                            <div class="route-control">
+                                <div class="route-main-line">
+                                    <div class="node-selector" id="sel-route-img"></div>
+                                    <label class="route-backup-panel" for="route_img_backup">
+                                        <span>备用节点</span>
+                                        <input type="checkbox" id="route_img_backup" class="ios-switch route-backup-toggle" data-route="text2img" />
+                                    </label>
+                                </div>
+                                <div class="route-backup-selector" id="sel-route-img-backup"></div>
+                            </div>
                             <input type="hidden" id="route_img" />
                         </div>
                         <div class="route-row">
                             <label>人设自拍</label>
-                            <div class="node-selector" id="sel-route-selfie"></div>
+                            <div class="route-control">
+                                <div class="route-main-line">
+                                    <div class="node-selector" id="sel-route-selfie"></div>
+                                    <label class="route-backup-panel" for="route_selfie_backup">
+                                        <span>备用节点</span>
+                                        <input type="checkbox" id="route_selfie_backup" class="ios-switch route-backup-toggle" data-route="selfie" />
+                                    </label>
+                                </div>
+                                <div class="route-backup-selector" id="sel-route-selfie-backup"></div>
+                            </div>
                             <input type="hidden" id="route_selfie" />
                         </div>
                         <div class="route-row">
                             <label>视频渲染</label>
-                            <div class="node-selector-video" id="sel-route-video"></div>
+                            <div class="route-control">
+                                <div class="route-main-line">
+                                    <div class="node-selector-video" id="sel-route-video"></div>
+                                    <label class="route-backup-panel" for="route_video_backup">
+                                        <span>备用节点</span>
+                                        <input type="checkbox" id="route_video_backup" class="ios-switch route-backup-toggle" data-route="video" />
+                                    </label>
+                                </div>
+                                <div class="route-backup-selector" id="sel-route-video-backup"></div>
+                            </div>
                             <input type="hidden" id="route_video" />
                         </div>
                     </div>
@@ -345,6 +372,6 @@
     </div>
 
     <div id="toast-container" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=3.3.7"></script>
+    <script type="module" src="./app.js?v=3.3.8"></script>
 </body>
 </html>

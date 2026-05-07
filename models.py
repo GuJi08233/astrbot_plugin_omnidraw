@@ -13,7 +13,7 @@ from .constants import DEFAULT_DRAW_PENDING_MESSAGE, DEFAULT_SELFIE_PENDING_MESS
 
 PLUGIN_NAME = "astrbot_plugin_omnidraw"
 PLUGIN_AUTHOR = "雪碧bir"
-PLUGIN_VERSION = "3.3.7"
+PLUGIN_VERSION = "3.3.8"
 
 
 @dataclass
@@ -322,8 +322,17 @@ def _build_provider_config(raw_provider: Any, is_video: bool) -> ProviderConfig:
 
 def _parse_chain(value: Any) -> List[str]:
     if isinstance(value, (list, tuple)):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return [item for item in _split_csv_or_lines(value) if item]
+        raw_items = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        raw_items = [item for item in _split_csv_or_lines(value) if item]
+    chain = []
+    seen = set()
+    for item in raw_items:
+        if item in seen:
+            continue
+        seen.add(item)
+        chain.append(item)
+    return chain
 
 
 def _parse_allowed_users(value: Any) -> List[str]:

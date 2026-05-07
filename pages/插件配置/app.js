@@ -75,6 +75,7 @@ let state = {
     persona_config: { active_persona_id: "default", profiles: [], persona_ref_image: [] },
     optimizer_config: {},
     router_config: {},
+    route_backup_enabled: { text2img: false, selfie: false, video: false },
     presets: [],
     providers: [],
     video_providers: [],
@@ -133,6 +134,24 @@ function normalizeIdText(value) {
         ? value.flatMap((item) => String(item || "").split(/[\s,]+/))
         : String(value || "").split(/[\s,]+/);
     return [...new Set(source.map((item) => String(item).trim()).filter(Boolean))].join("\n");
+}
+
+function splitChain(value) {
+    const source = Array.isArray(value)
+        ? value
+        : String(value || "").replace(/\r/g, "\n").split(/[\s,]+/);
+    const seen = new Set();
+    return source
+        .map((item) => String(item || "").trim())
+        .filter((item) => {
+            if (!item || seen.has(item)) return false;
+            seen.add(item);
+            return true;
+        });
+}
+
+function joinChain(value) {
+    return splitChain(value).join(",");
 }
 
 function mergeIdText(...values) {
@@ -408,8 +427,168 @@ async function loadUsageStats(showToastOnSuccess = false) {
     }
 }
 
+const routeDefs = {
+    text2img: {
+        stateKey: "chain_text2img",
+        inputId: "route_img",
+        selectorId: "sel-route-img",
+        backupSelectorId: "sel-route-img-backup",
+        backupToggleId: "route_img_backup",
+        fallback: "node_1",
+        source: () => state.providers
+    },
+    selfie: {
+        stateKey: "chain_selfie",
+        inputId: "route_selfie",
+        selectorId: "sel-route-selfie",
+        backupSelectorId: "sel-route-selfie-backup",
+        backupToggleId: "route_selfie_backup",
+        fallback: "node_1",
+        source: () => state.providers
+    },
+    video: {
+        stateKey: "chain_video",
+        inputId: "route_video",
+        selectorId: "sel-route-video",
+        backupSelectorId: "sel-route-video-backup",
+        backupToggleId: "route_video_backup",
+        fallback: "video_node_1",
+        source: () => state.video_providers
+    }
+};
+
+function routeChain(routeName) {
+    const def = routeDefs[routeName];
+    if (!def) return [];
+    const chain = splitChain(state.router_config[def.stateKey]);
+    if (chain.length) return chain;
+    return def.fallback ? [def.fallback] : [];
+}
+
+function routePrimary(routeName) {
+    return routeChain(routeName)[0] || "";
+}
+
+function routeBackups(routeName) {
+    return routeChain(routeName).slice(1);
+}
+
+function writeRouteChain(routeName, chain) {
+    const def = routeDefs[routeName];
+    if (!def) return;
+    const normalized = splitChain(chain);
+    state.router_config[def.stateKey] = normalized.join(",");
+    const hiddenInput = byId(def.inputId);
+    if (hiddenInput) hiddenInput.value = normalized[0] || "";
+}
+
+function bounceRoute(routeName) {
+    const def = routeDefs[routeName];
+    const control = def ? byId(def.backupToggleId)?.closest(".route-control") : null;
+    if (!control) return;
+    control.classList.remove("route-bounce");
+    void control.offsetWidth;
+    control.classList.add("route-bounce");
+    window.setTimeout(() => control.classList.remove("route-bounce"), 560);
+}
+
+function syncRouteFromHidden(routeName) {
+    const def = routeDefs[routeName];
+    if (!def) return;
+    const primary = String(byId(def.inputId)?.value || routePrimary(routeName) || def.fallback || "").trim();
+    const backups = state.route_backup_enabled[routeName]
+        ? routeBackups(routeName).filter((nodeId) => nodeId !== primary)
+        : [];
+    writeRouteChain(routeName, primary ? [primary, ...backups] : backups);
+}
+
+function setRouteBackupEnabled(routeName, enabled) {
+    if (!routeDefs[routeName]) return;
+    state.route_backup_enabled[routeName] = Boolean(enabled);
+    if (!enabled) {
+        writeRouteChain(routeName, [routePrimary(routeName)]);
+    }
+    renderSelectors();
+    bounceRoute(routeName);
+}
+
+function handleRouteChipClick(chip) {
+    const routeName = chip.getAttribute("data-route");
+    const role = chip.getAttribute("data-role");
+    const nodeId = chip.getAttribute("data-id");
+    if (!routeDefs[routeName] || !nodeId) return;
+
+    const chain = routeChain(routeName);
+    const currentPrimary = chain[0] || "";
+    let backups = chain.slice(1);
+
+    if (role === "backup") {
+        if (nodeId === currentPrimary) return;
+        const existingIndex = backups.indexOf(nodeId);
+        if (existingIndex === -1) {
+            backups.push(nodeId);
+        } else {
+            backups.splice(existingIndex, 1);
+        }
+        writeRouteChain(routeName, [currentPrimary, ...backups]);
+        renderSelectors();
+        bounceRoute(routeName);
+        setDirty();
+        return;
+    }
+
+    backups = backups.filter((backupId) => backupId !== nodeId);
+    writeRouteChain(routeName, [nodeId, ...backups]);
+    renderSelectors();
+    bounceRoute(routeName);
+    setDirty();
+}
+
 function renderSelectors() {
-    const renderTo = (containerId, sourceList, inputId) => {
+    const renderPrimaryTo = (routeName) => {
+        const def = routeDefs[routeName];
+        const container = byId(def.selectorId);
+        const hiddenInput = byId(def.inputId);
+        if (!container || !hiddenInput) return;
+        const currentVal = routePrimary(routeName);
+        hiddenInput.value = currentVal;
+        const sourceList = def.source();
+        const html = sourceList.map((node) => {
+            const nodeId = node.id || node["节点ID"];
+            if (!nodeId) return "";
+            const isActive = nodeId === currentVal;
+            return `<button type="button" class="selector-chip ${isActive ? "active" : ""}" data-route="${routeName}" data-role="primary" data-id="${escapeHtml(nodeId)}">${escapeHtml(nodeId)}</button>`;
+        }).join("");
+        container.innerHTML = html || '<span class="empty-hint">暂无可选节点</span>';
+    };
+
+    const renderBackupTo = (routeName) => {
+        const def = routeDefs[routeName];
+        const container = byId(def.backupSelectorId);
+        const toggle = byId(def.backupToggleId);
+        if (!container || !toggle) return;
+
+        const primary = routePrimary(routeName);
+        const backups = routeBackups(routeName);
+        const enabled = Boolean(state.route_backup_enabled[routeName] || backups.length);
+        state.route_backup_enabled[routeName] = enabled;
+        toggle.checked = enabled;
+        toggle.closest(".route-backup-panel")?.classList.toggle("is-enabled", enabled);
+        toggle.closest(".route-control")?.classList.toggle("has-backups-enabled", enabled);
+
+        const sourceList = def.source();
+        const html = sourceList.map((node) => {
+            const nodeId = node.id || node["节点ID"];
+            if (!nodeId || nodeId === primary) return "";
+            const order = backups.indexOf(nodeId);
+            const isActive = order !== -1;
+            const orderBadge = isActive ? `<span class="selector-chip-order">${order + 1}</span>` : "";
+            return `<button type="button" class="selector-chip ${isActive ? "active" : ""}" data-route="${routeName}" data-role="backup" data-id="${escapeHtml(nodeId)}"><span>${escapeHtml(nodeId)}</span>${orderBadge}</button>`;
+        }).join("");
+        container.innerHTML = html || '<span class="empty-hint">暂无可选备用节点</span>';
+    };
+
+    const renderSingleTo = (containerId, sourceList, inputId) => {
         const container = byId(containerId);
         const hiddenInput = byId(inputId);
         if (!container || !hiddenInput) return;
@@ -423,10 +602,13 @@ function renderSelectors() {
         container.innerHTML = html || '<span class="empty-hint">暂无可选节点</span>';
     };
 
-    renderTo("sel-route-img", state.providers, "route_img");
-    renderTo("sel-route-selfie", state.providers, "route_selfie");
-    renderTo("sel-opt-chain", state.providers, "opt_chain");
-    renderTo("sel-route-video", state.video_providers, "route_video");
+    renderPrimaryTo("text2img");
+    renderBackupTo("text2img");
+    renderPrimaryTo("selfie");
+    renderBackupTo("selfie");
+    renderSingleTo("sel-opt-chain", state.providers, "opt_chain");
+    renderPrimaryTo("video");
+    renderBackupTo("video");
 }
 
 function renderPersonaProfiles() {
@@ -575,9 +757,9 @@ function bindBasicFields() {
     byId("usage_checkin_max").value = state.usage_config.checkin_bonus_max ?? 3;
     byId("reply_draw_pending").value = state.reply_config.draw_pending_message || defaultReplyConfig.draw_pending_message;
     byId("reply_selfie_pending").value = state.reply_config.selfie_pending_message || defaultReplyConfig.selfie_pending_message;
-    byId("route_img").value = state.router_config.chain_text2img || "node_1";
-    byId("route_selfie").value = state.router_config.chain_selfie || "node_1";
-    byId("route_video").value = state.router_config.chain_video || "video_node_1";
+    byId("route_img").value = routePrimary("text2img") || "node_1";
+    byId("route_selfie").value = routePrimary("selfie") || "node_1";
+    byId("route_video").value = routePrimary("video") || "video_node_1";
     bindPersonaFields();
     byId("opt_enable").checked = Boolean(state.optimizer_config.enable_optimizer);
     byId("opt_style").value = state.optimizer_config.optimizer_style || "手机日常原生感";
@@ -603,9 +785,9 @@ function readBasicFields() {
     }
     state.reply_config.draw_pending_message = byId("reply_draw_pending").value.trim() || defaultReplyConfig.draw_pending_message;
     state.reply_config.selfie_pending_message = byId("reply_selfie_pending").value.trim() || defaultReplyConfig.selfie_pending_message;
-    state.router_config.chain_text2img = byId("route_img").value.trim();
-    state.router_config.chain_selfie = byId("route_selfie").value.trim();
-    state.router_config.chain_video = byId("route_video").value.trim();
+    syncRouteFromHidden("text2img");
+    syncRouteFromHidden("selfie");
+    syncRouteFromHidden("video");
     writeActivePersonaFieldsFromForm();
     state.optimizer_config.enable_optimizer = byId("opt_enable").checked;
     state.optimizer_config.optimizer_style = byId("opt_style").value;
@@ -646,6 +828,13 @@ function validateConfig() {
         if (duplicates.length) return `${label}节点 ID 重复：${duplicates[0]}`;
         return "";
     };
+    const validateRoute = (routeName, label) => {
+        const def = routeDefs[routeName];
+        const ids = new Set(def.source().map((node) => String(node.id || "").trim()).filter(Boolean));
+        if (!ids.size) return "";
+        const missing = routeChain(routeName).find((nodeId) => !ids.has(nodeId));
+        return missing ? `${label}链路包含不存在的节点：${missing}` : "";
+    };
     writeActivePersonaFieldsFromForm();
     const personaIds = state.persona_config.profiles.map((profile) => String(profile.id || "").trim()).filter(Boolean);
     const personaNames = state.persona_config.profiles.map((profile) => String(profile.persona_name || "").trim());
@@ -654,7 +843,11 @@ function validateConfig() {
     if (personaNames.some((name) => !name)) return "人设名称不能为空";
     if (duplicatePersonaIds.length) return `人设 ID 重复：${duplicatePersonaIds[0]}`;
     if (state.usage_config.enable_daily_limit && state.usage_config.daily_image_limit <= 0) return "每日生图上限必须大于 0";
-    return validateList(state.providers, "图像") || validateList(state.video_providers, "视频");
+    return validateList(state.providers, "图像")
+        || validateList(state.video_providers, "视频")
+        || validateRoute("text2img", "图像生成")
+        || validateRoute("selfie", "人设自拍")
+        || validateRoute("video", "视频渲染");
 }
 
 function setActiveTab(navItem) {
@@ -795,6 +988,10 @@ function setupEventDelegation() {
 
         const chip = e.target.closest(".selector-chip");
         if (chip) {
+            if (chip.hasAttribute("data-route")) {
+                handleRouteChipClick(chip);
+                return;
+            }
             const inputId = chip.getAttribute("data-input");
             byId(inputId).value = chip.getAttribute("data-id");
             document.querySelectorAll(`.selector-chip[data-input="${inputId}"]`).forEach((item) => item.classList.remove("active"));
@@ -925,6 +1122,11 @@ function setupEventDelegation() {
 
     document.body.addEventListener("change", (e) => {
         const input = e.target;
+        if (input.classList.contains("route-backup-toggle")) {
+            setRouteBackupEnabled(input.getAttribute("data-route"), input.checked);
+            setDirty();
+            return;
+        }
         if (input.hasAttribute("data-sync") && ["prov-id", "vid-id"].includes(input.getAttribute("data-sync"))) {
             renderSelectors();
         }
@@ -1005,9 +1207,14 @@ async function init() {
     state.permission_config = normalizePermissionConfig(perm);
     state.usage_config = normalizeUsageConfig(rawConfig.usage_config || {});
     state.reply_config = normalizeReplyConfig(rawConfig.reply_config || {});
-    state.router_config.chain_text2img = deepFind(route, ["chain_text2img"], "node_1");
-    state.router_config.chain_selfie = deepFind(route, ["chain_selfie"], "node_1");
-    state.router_config.chain_video = deepFind(route, ["chain_video"], "video_node_1");
+    state.router_config.chain_text2img = joinChain(splitChain(deepFind(route, ["chain_text2img"], "node_1"))) || "node_1";
+    state.router_config.chain_selfie = joinChain(splitChain(deepFind(route, ["chain_selfie"], "node_1"))) || "node_1";
+    state.router_config.chain_video = joinChain(splitChain(deepFind(route, ["chain_video"], "video_node_1"))) || "video_node_1";
+    state.route_backup_enabled = {
+        text2img: splitChain(state.router_config.chain_text2img).length > 1,
+        selfie: splitChain(state.router_config.chain_selfie).length > 1,
+        video: splitChain(state.router_config.chain_video).length > 1
+    };
     state.persona_config = normalizePersonaProfiles(pers);
 
     state.optimizer_config.enable_optimizer = deepFind(opt, ["enable_optimizer"], true);
