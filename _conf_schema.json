@@ -1,14 +1,62 @@
 {
   "permission_config": {
-    "description": "权限控制",
+    "description": "权限与额度豁免",
     "type": "object",
-    "hint": "留空表示所有用户都可以使用；填写 QQ 号后，仅列表中的用户可调用绘图、自拍、视频等指令。",
+    "hint": "旧版“允许使用的 QQ 号”已合并为用户白名单。黑名单优先级最高；用户白名单与群组白名单不受每日限额限制；其余用户默认可用并按用量限制统计。",
     "items": {
       "allowed_users": {
-        "description": "允许使用的 QQ 号",
+        "description": "用户白名单（不限次数）",
         "type": "text",
-        "hint": "可按行、英文逗号或空格分隔，例如：123456, 234567。",
+        "hint": "填写 AstrBot 识别到的用户 ID / QQ 号，可按行、英文逗号或空格分隔。旧版 allowed_users 会自动迁移到这里。",
         "default": ""
+      },
+      "blocked_users": {
+        "description": "用户黑名单（禁止使用）",
+        "type": "text",
+        "hint": "黑名单内用户不能调用万象画卷指令和 LLM 工具，优先级高于白名单。",
+        "default": ""
+      },
+      "unlimited_groups": {
+        "description": "群组白名单（群内不限次数）",
+        "type": "text",
+        "hint": "填写 QQ 群号。命中群白名单时，该群内用户不受每日生图次数限制。",
+        "default": ""
+      }
+    }
+  },
+  "usage_config": {
+    "description": "生图用量限制",
+    "type": "object",
+    "hint": "按 AstrBot 事件里的用户 ID 统计每日成功生图张数。用户/群白名单只豁免次数限制，仍会进入统计。",
+    "items": {
+      "enable_daily_limit": {
+        "description": "启用每日用户生图限制",
+        "type": "bool",
+        "default": false
+      },
+      "daily_image_limit": {
+        "description": "每人每日基础上限",
+        "type": "int",
+        "hint": "仅在启用限制时生效。统计单位为图片张数，/画、/自拍、宏指令和 LLM 生图工具都会计入。",
+        "default": 20
+      },
+      "enable_checkin": {
+        "description": "启用签到领额度",
+        "type": "bool",
+        "hint": "仅对有使用权限且仍受每日限额影响的用户生效。白名单/群白名单用户无需签到。",
+        "default": false
+      },
+      "checkin_bonus_min": {
+        "description": "签到奖励最小张数",
+        "type": "int",
+        "hint": "与最大张数相同即为固定奖励；小于最大张数时每天随机发放区间内整数张。",
+        "default": 1
+      },
+      "checkin_bonus_max": {
+        "description": "签到奖励最大张数",
+        "type": "int",
+        "hint": "保存时若小于最小张数，会自动按最小张数处理。",
+        "default": 3
       }
     }
   },

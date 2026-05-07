@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 PLUGIN_NAME = "astrbot_plugin_omnidraw"
 PLUGIN_AUTHOR = "雪碧bir"
-PLUGIN_VERSION = "3.3.4"
+PLUGIN_VERSION = "3.3.6"
 
 
 @dataclass
@@ -62,6 +62,14 @@ class PluginConfig:
     active_persona_id: str
     personas: List[PersonaProfile]
     allowed_users: List[str]
+    unlimited_users: List[str]
+    blocked_users: List[str]
+    unlimited_groups: List[str]
+    enable_daily_limit: bool
+    daily_image_limit: int
+    enable_checkin: bool
+    checkin_bonus_min: int
+    checkin_bonus_max: int
     optimizer_style: str
     optimizer_custom_prompt: str
     verbose_report: bool
@@ -100,6 +108,7 @@ class PluginConfig:
         opt_conf = _ensure_dict(config_dict, "optimizer_config")
         router_conf = _ensure_dict(config_dict, "router_config")
         perm_conf = _ensure_dict(config_dict, "permission_config")
+        usage_conf = _ensure_dict(config_dict, "usage_config")
 
         for legacy_key in ("persona_name", "persona_base_prompt", "persona_ref_image", "persona_ref_images"):
             if legacy_key in config_dict and legacy_key not in persona_conf:
@@ -122,6 +131,35 @@ class PluginConfig:
         optimizer_model = str(opt_conf.get("optimizer_model", "")).strip()
         if not optimizer_model and providers:
             optimizer_model = providers[0].model
+        user_whitelist = _merge_unique_values(
+            perm_conf.get("allowed_users", ""),
+            perm_conf.get("unlimited_users", ""),
+            perm_conf.get("user_whitelist", ""),
+        )
+        blocked_users = _merge_unique_values(
+            perm_conf.get("blocked_users", ""),
+            perm_conf.get("user_blacklist", ""),
+        )
+        unlimited_groups = _merge_unique_values(
+            perm_conf.get("unlimited_groups", ""),
+            perm_conf.get("group_whitelist", ""),
+        )
+        perm_conf["allowed_users"] = "\n".join(user_whitelist)
+        perm_conf["blocked_users"] = "\n".join(blocked_users)
+        perm_conf["unlimited_groups"] = "\n".join(unlimited_groups)
+
+        enable_daily_limit = _to_bool(usage_conf.get("enable_daily_limit", False))
+        daily_image_limit = _to_int(usage_conf.get("daily_image_limit", 20), 20, minimum=0)
+        enable_checkin = _to_bool(usage_conf.get("enable_checkin", False))
+        checkin_bonus_min = _to_int(usage_conf.get("checkin_bonus_min", 1), 1, minimum=0)
+        checkin_bonus_max = _to_int(usage_conf.get("checkin_bonus_max", 3), 3, minimum=0)
+        if checkin_bonus_max < checkin_bonus_min:
+            checkin_bonus_max = checkin_bonus_min
+        usage_conf["enable_daily_limit"] = enable_daily_limit
+        usage_conf["daily_image_limit"] = daily_image_limit
+        usage_conf["enable_checkin"] = enable_checkin
+        usage_conf["checkin_bonus_min"] = checkin_bonus_min
+        usage_conf["checkin_bonus_max"] = checkin_bonus_max
 
         return cls(
             providers=providers,
@@ -138,7 +176,15 @@ class PluginConfig:
             persona_ref_images=list(active_persona.ref_images),
             active_persona_id=active_persona.id,
             personas=personas,
-            allowed_users=_parse_allowed_users(perm_conf.get("allowed_users", "")),
+            allowed_users=user_whitelist,
+            unlimited_users=list(user_whitelist),
+            blocked_users=blocked_users,
+            unlimited_groups=unlimited_groups,
+            enable_daily_limit=enable_daily_limit,
+            daily_image_limit=daily_image_limit,
+            enable_checkin=enable_checkin,
+            checkin_bonus_min=checkin_bonus_min,
+            checkin_bonus_max=checkin_bonus_max,
             optimizer_style=str(opt_conf.get("optimizer_style", "手机日常原生感")).strip() or "手机日常原生感",
             optimizer_custom_prompt=str(opt_conf.get("optimizer_custom_prompt", "")),
             verbose_report=_to_bool(config_dict.get("verbose_report", False)),
@@ -187,7 +233,7 @@ def _split_csv_or_lines(value: Any) -> List[str]:
     if isinstance(value, (list, tuple)):
         items = value
     else:
-        items = str(value).replace("\r", "\n").replace(",", "\n").split("\n")
+        items = re.split(r"[\s,]+", str(value).replace("\r", "\n"))
     return [str(item).strip() for item in items if str(item).strip()]
 
 
@@ -264,6 +310,18 @@ def _parse_chain(value: Any) -> List[str]:
 
 def _parse_allowed_users(value: Any) -> List[str]:
     return _split_csv_or_lines(value)
+
+
+def _merge_unique_values(*values: Any) -> List[str]:
+    merged = []
+    seen = set()
+    for value in values:
+        for item in _parse_allowed_users(value):
+            if item in seen:
+                continue
+            seen.add(item)
+            merged.append(item)
+    return merged
 
 
 def _to_bool(value: Any) -> bool:

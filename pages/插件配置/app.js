@@ -1,5 +1,12 @@
 const mockConfig = {
-    permission_config: { allowed_users: "" },
+    permission_config: { allowed_users: "", blocked_users: "", unlimited_groups: "" },
+    usage_config: {
+        enable_daily_limit: false,
+        daily_image_limit: 20,
+        enable_checkin: false,
+        checkin_bonus_min: 1,
+        checkin_bonus_max: 3
+    },
     persona_config: {
         active_persona_id: "default",
         persona_name: "默认助理",
@@ -29,9 +36,19 @@ const mockConfig = {
     verbose_report: false
 };
 
+const mockUsageStats = {
+    date: new Date().toISOString().slice(0, 10),
+    total: 8,
+    users: [
+        { user_id: "10001", display_name: "10001", count: 5, bonus: 2, checkin_at: Math.floor(Date.now() / 1000) - 2400, last_at: Math.floor(Date.now() / 1000) - 1800, access_level: "limited" },
+        { user_id: "10002", display_name: "10002", count: 3, bonus: 0, checkin_at: 0, last_at: Math.floor(Date.now() / 1000) - 7200, access_level: "unlimited_user" }
+    ],
+    quota: { enabled: false, daily_limit: 0 }
+};
+
 const bridge = window.AstrBotPluginPage || {
     ready: async () => ({}),
-    apiGet: async () => JSON.parse(JSON.stringify(mockConfig)),
+    apiGet: async (name) => JSON.parse(JSON.stringify(name === "get_usage_stats" ? { success: true, stats: mockUsageStats } : mockConfig)),
     apiPost: async (_, payload) => {
         console.info("[OmniDraw local preview] save_config", payload);
         return { success: true };
@@ -39,7 +56,15 @@ const bridge = window.AstrBotPluginPage || {
 };
 
 let state = {
-    permission_config: {},
+    permission_config: { allowed_users: "", blocked_users: "", unlimited_groups: "" },
+    usage_config: {
+        enable_daily_limit: false,
+        daily_image_limit: 20,
+        enable_checkin: false,
+        checkin_bonus_min: 1,
+        checkin_bonus_max: 3
+    },
+    usage_stats: { date: "", total: 0, users: [], quota: { enabled: false, daily_limit: 0 } },
     persona_config: { active_persona_id: "default", profiles: [], persona_ref_image: [] },
     optimizer_config: {},
     router_config: {},
@@ -89,6 +114,90 @@ function normalizeModelList(value) {
 
 function normalizeTextAreaKeys(value) {
     return Array.isArray(value) ? value.join("\n") : String(value || "");
+}
+
+function readNonnegativeIntInput(id, fallback = 0) {
+    const parsed = parseInt(byId(id)?.value, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function normalizeIdText(value) {
+    const source = Array.isArray(value)
+        ? value.flatMap((item) => String(item || "").split(/[\s,]+/))
+        : String(value || "").split(/[\s,]+/);
+    return [...new Set(source.map((item) => String(item).trim()).filter(Boolean))].join("\n");
+}
+
+function mergeIdText(...values) {
+    return normalizeIdText(values.flatMap((value) => normalizeIdText(value).split("\n")));
+}
+
+function normalizePermissionConfig(value = {}) {
+    return {
+        allowed_users: mergeIdText(value.allowed_users, value.unlimited_users, value.user_whitelist),
+        blocked_users: mergeIdText(value.blocked_users, value.user_blacklist),
+        unlimited_groups: mergeIdText(value.unlimited_groups, value.group_whitelist)
+    };
+}
+
+function normalizeUsageConfig(value = {}) {
+    const limit = parseInt(value.daily_image_limit ?? 20, 10);
+    const bonusMin = parseInt(value.checkin_bonus_min ?? 1, 10);
+    const bonusMax = parseInt(value.checkin_bonus_max ?? 3, 10);
+    const normalizedMin = Number.isFinite(bonusMin) && bonusMin >= 0 ? bonusMin : 1;
+    const normalizedMax = Number.isFinite(bonusMax) && bonusMax >= 0 ? bonusMax : 3;
+    return {
+        enable_daily_limit: Boolean(value.enable_daily_limit),
+        daily_image_limit: Number.isFinite(limit) && limit > 0 ? limit : 20,
+        enable_checkin: Boolean(value.enable_checkin),
+        checkin_bonus_min: normalizedMin,
+        checkin_bonus_max: Math.max(normalizedMin, normalizedMax)
+    };
+}
+
+function normalizeUsageStats(value = {}) {
+    const stats = value.stats || value;
+    const rawUsers = Array.isArray(stats.users)
+        ? stats.users
+        : Object.entries(stats.users || {}).map(([userId, record]) => ({ user_id: userId, ...(record || {}) }));
+    const users = rawUsers
+        .map((user) => ({
+            user_id: String(user.user_id || user.id || "").trim(),
+            display_name: String(user.display_name || user.name || "").trim(),
+            count: parseInt(user.count || 0, 10) || 0,
+            bonus: parseInt(user.bonus || 0, 10) || 0,
+            checkin_at: parseInt(user.checkin_at || 0, 10) || 0,
+            group_id: String(user.group_id || "").trim(),
+            access_level: String(user.access_level || "limited").trim(),
+            last_at: parseInt(user.last_at || 0, 10) || 0
+        }))
+        .filter((user) => user.user_id)
+        .sort((a, b) => b.count - a.count || a.user_id.localeCompare(b.user_id));
+    const total = Number.isFinite(parseInt(stats.total, 10))
+        ? parseInt(stats.total, 10)
+        : users.reduce((sum, user) => sum + user.count, 0);
+    return {
+        date: stats.date || "",
+        total,
+        users,
+        quota: {
+            enabled: Boolean(stats.quota?.enabled),
+            daily_limit: parseInt(stats.quota?.daily_limit || 0, 10) || 0,
+            checkin_enabled: Boolean(stats.quota?.checkin_enabled),
+            checkin_bonus_min: parseInt(stats.quota?.checkin_bonus_min || 0, 10) || 0,
+            checkin_bonus_max: parseInt(stats.quota?.checkin_bonus_max || 0, 10) || 0
+        }
+    };
+}
+
+function formatUsageTime(timestamp) {
+    if (!timestamp) return "—";
+    return new Date(timestamp * 1000).toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
 }
 
 function normalizePersonaImages(value) {
@@ -221,6 +330,68 @@ function updateMetrics() {
     byId("metric-image-nodes").textContent = state.providers.length;
     byId("metric-video-nodes").textContent = state.video_providers.length;
     byId("metric-presets").textContent = state.presets.filter((preset) => preset.name.trim()).length;
+    byId("metric-today-images").textContent = state.usage_stats.total || 0;
+}
+
+function usageAccessLabel(level) {
+    return ({
+        limited: "受限",
+        unlimited_user: "用户白名单",
+        unlimited_group: "群白名单",
+        blocked_user: "黑名单"
+    }[level] || "受限");
+}
+
+function renderUsageStats() {
+    const stats = state.usage_stats || {};
+    byId("usage-stat-date").textContent = stats.date || "今日";
+    byId("usage-stat-total").textContent = stats.total || 0;
+    byId("usage-stat-users").textContent = (stats.users || []).length;
+    byId("usage-stat-limit").textContent = state.usage_config.enable_daily_limit
+        ? `${state.usage_config.daily_image_limit} 张/人${state.usage_config.enable_checkin ? " + 签到" : ""}`
+        : "不限";
+
+    const container = byId("usage-users-container");
+    if (!container) return;
+    const users = stats.users || [];
+    container.innerHTML = users.map((user) => {
+        const label = user.display_name && user.display_name !== user.user_id
+            ? `${escapeHtml(user.display_name)} · ${escapeHtml(user.user_id)}`
+            : escapeHtml(user.user_id);
+        const accessLabel = usageAccessLabel(user.access_level);
+        const isUnlimited = user.access_level === "unlimited_user" || user.access_level === "unlimited_group";
+        const effectiveLimit = (state.usage_config.daily_image_limit || 0) + (user.bonus || 0);
+        const quotaText = state.usage_config.enable_daily_limit
+            ? (isUnlimited ? `${user.count} · 不限` : `${user.count}/${effectiveLimit}`)
+            : `${user.count}`;
+        const meta = [`最后生成 ${formatUsageTime(user.last_at)}`, accessLabel];
+        if (user.group_id) meta.push(`群 ${escapeHtml(user.group_id)}`);
+        if (user.bonus) meta.push(`签到 +${user.bonus}`);
+        if (user.checkin_at) meta.push(`签到 ${formatUsageTime(user.checkin_at)}`);
+        return `
+            <div class="usage-user-row">
+                <div class="usage-user-main">
+                    <strong>${label}</strong>
+                    <small>${meta.join(" · ")}</small>
+                </div>
+                <span>${quotaText}</span>
+            </div>
+        `;
+    }).join("") || '<div class="empty-state">今日暂无生图记录</div>';
+    updateMetrics();
+}
+
+async function loadUsageStats(showToastOnSuccess = false) {
+    try {
+        const res = await bridge.apiGet("get_usage_stats");
+        state.usage_stats = normalizeUsageStats(res?.stats || res || {});
+        renderUsageStats();
+        if (showToastOnSuccess) showToast("统计已刷新");
+    } catch (error) {
+        console.error(error);
+        if (showToastOnSuccess) showToast("统计刷新失败", "error");
+        renderUsageStats();
+    }
 }
 
 function renderSelectors() {
@@ -381,6 +552,13 @@ function renderProviderCard(p, i, isVideo) {
 
 function bindBasicFields() {
     byId("perm_allowed_users").value = state.permission_config.allowed_users || "";
+    byId("perm_blocked_users").value = state.permission_config.blocked_users || "";
+    byId("perm_unlimited_groups").value = state.permission_config.unlimited_groups || "";
+    byId("usage_enable").checked = Boolean(state.usage_config.enable_daily_limit);
+    byId("usage_daily_limit").value = state.usage_config.daily_image_limit || 20;
+    byId("usage_checkin_enable").checked = Boolean(state.usage_config.enable_checkin);
+    byId("usage_checkin_min").value = state.usage_config.checkin_bonus_min ?? 1;
+    byId("usage_checkin_max").value = state.usage_config.checkin_bonus_max ?? 3;
     byId("route_img").value = state.router_config.chain_text2img || "node_1";
     byId("route_selfie").value = state.router_config.chain_selfie || "node_1";
     byId("route_video").value = state.router_config.chain_video || "video_node_1";
@@ -396,7 +574,17 @@ function bindBasicFields() {
 }
 
 function readBasicFields() {
-    state.permission_config.allowed_users = byId("perm_allowed_users").value.trim();
+    state.permission_config.allowed_users = normalizeIdText(byId("perm_allowed_users").value);
+    state.permission_config.blocked_users = normalizeIdText(byId("perm_blocked_users").value);
+    state.permission_config.unlimited_groups = normalizeIdText(byId("perm_unlimited_groups").value);
+    state.usage_config.enable_daily_limit = byId("usage_enable").checked;
+    state.usage_config.daily_image_limit = Math.max(1, parseInt(byId("usage_daily_limit").value, 10) || 20);
+    state.usage_config.enable_checkin = byId("usage_checkin_enable").checked;
+    state.usage_config.checkin_bonus_min = readNonnegativeIntInput("usage_checkin_min", 0);
+    state.usage_config.checkin_bonus_max = readNonnegativeIntInput("usage_checkin_max", 0);
+    if (state.usage_config.checkin_bonus_max < state.usage_config.checkin_bonus_min) {
+        state.usage_config.checkin_bonus_max = state.usage_config.checkin_bonus_min;
+    }
     state.router_config.chain_text2img = byId("route_img").value.trim();
     state.router_config.chain_selfie = byId("route_selfie").value.trim();
     state.router_config.chain_video = byId("route_video").value.trim();
@@ -415,6 +603,7 @@ function buildPayload() {
     readBasicFields();
     return {
         permission_config: state.permission_config,
+        usage_config: state.usage_config,
         persona_config: state.persona_config,
         optimizer_config: state.optimizer_config,
         router_config: state.router_config,
@@ -426,6 +615,11 @@ function buildPayload() {
 }
 
 function validateConfig() {
+    const checkinMin = readNonnegativeIntInput("usage_checkin_min", 0);
+    const checkinMax = readNonnegativeIntInput("usage_checkin_max", 0);
+    if (byId("usage_checkin_enable").checked && checkinMax < checkinMin) return "签到奖励最大张数不能小于最小张数";
+
+    readBasicFields();
     const validateList = (list, label) => {
         const ids = list.map((node) => String(node.id || "").trim()).filter(Boolean);
         const duplicates = ids.filter((id, idx) => ids.indexOf(id) !== idx);
@@ -440,6 +634,7 @@ function validateConfig() {
     if (!state.persona_config.profiles.length) return "至少需要保留一个人设";
     if (personaNames.some((name) => !name)) return "人设名称不能为空";
     if (duplicatePersonaIds.length) return `人设 ID 重复：${duplicatePersonaIds[0]}`;
+    if (state.usage_config.enable_daily_limit && state.usage_config.daily_image_limit <= 0) return "每日生图上限必须大于 0";
     return validateList(state.providers, "图像") || validateList(state.video_providers, "视频");
 }
 
@@ -614,6 +809,10 @@ function setupEventDelegation() {
         const idx = parseInt(btn.getAttribute("data-index"), 10);
 
         if (act === "save-config") saveConfig(btn);
+        if (act === "refresh-usage") {
+            loadUsageStats(true);
+            return;
+        }
         if (act === "switch-persona") {
             switchPersona(idx);
             return;
@@ -760,6 +959,7 @@ async function saveConfig(btn) {
         if (res?.success) {
             savedSnapshot = JSON.stringify(payload);
             setDirty(false);
+            renderUsageStats();
             showToast("配置已保存");
         } else {
             showToast(res?.message || "保存失败", "error");
@@ -783,7 +983,8 @@ async function init() {
     const opt = rawConfig.optimizer_config || rawConfig;
     const route = rawConfig.router_config || rawConfig;
 
-    state.permission_config.allowed_users = perm.allowed_users || "";
+    state.permission_config = normalizePermissionConfig(perm);
+    state.usage_config = normalizeUsageConfig(rawConfig.usage_config || {});
     state.router_config.chain_text2img = deepFind(route, ["chain_text2img"], "node_1");
     state.router_config.chain_selfie = deepFind(route, ["chain_selfie"], "node_1");
     state.router_config.chain_video = deepFind(route, ["chain_video"], "video_node_1");
@@ -835,7 +1036,9 @@ async function init() {
     renderProviders();
     renderVideoProviders();
     renderPersonaImages();
+    renderUsageStats();
     setupEventDelegation();
+    await loadUsageStats(false);
     updateMetrics();
     initialized = true;
     savedSnapshot = JSON.stringify(buildPayload());

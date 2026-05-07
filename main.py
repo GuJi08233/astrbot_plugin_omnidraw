@@ -11,7 +11,9 @@ import hashlib
 import json
 import mimetypes
 import os
+import random
 import re
+import time
 import uuid
 from urllib.parse import parse_qs, urlparse
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
@@ -61,6 +63,7 @@ CONFIG_KEYS = {
     "presets",
     "providers",
     "video_providers",
+    "usage_config",
     "verbose_report",
 }
 
@@ -73,6 +76,8 @@ class OmniDrawPlugin(Star):
         self.data_dir = self._resolve_data_dir()
         os.makedirs(self.data_dir, exist_ok=True)
         self.config_path = os.path.join(self.data_dir, "omnidraw_persist_config.json")
+        self.usage_stats_path = os.path.join(self.data_dir, "omnidraw_usage_stats.json")
+        self._usage_stats = self._load_usage_stats()
         self._background_tasks = set()
         self._page_image_tokens: Dict[str, str] = {}
         self._native_config = config if hasattr(config, "save_config") else None
@@ -97,6 +102,12 @@ class OmniDrawPlugin(Star):
             self.save_config_handler,
             ["POST"],
             "保存万象画卷配置",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/get_usage_stats",
+            self.get_usage_stats_handler,
+            ["GET"],
+            "获取万象画卷当日生图统计",
         )
         self.context.register_web_api(
             f"/{PLUGIN_NAME}/get_image",
@@ -136,6 +147,95 @@ class OmniDrawPlugin(Star):
         except Exception as exc:
             logger.error(f"[OmniDraw] 读取配置失败: {path} {exc}", exc_info=True)
             return {}
+
+    def _today_key(self) -> str:
+        return time.strftime("%Y-%m-%d", time.localtime())
+
+    def _to_nonnegative_int(self, value: Any, default: int = 0) -> int:
+        try:
+            parsed = int(float(str(value).strip()))
+        except Exception:
+            parsed = default
+        return max(0, parsed)
+
+    def _load_usage_stats(self) -> Dict[str, Any]:
+        return self._normalize_usage_stats(self._load_json_file(self.usage_stats_path))
+
+    def _normalize_usage_stats(self, stats: Dict[str, Any]) -> Dict[str, Any]:
+        today = self._today_key()
+        if not isinstance(stats, dict) or stats.get("date") != today:
+            return {"date": today, "total": 0, "users": {}}
+
+        users = stats.get("users")
+        if not isinstance(users, dict):
+            users = {}
+
+        normalized_users = {}
+        for raw_user_id, raw_record in users.items():
+            user_id = str(raw_user_id or "").strip()
+            if not user_id:
+                continue
+            record = raw_record if isinstance(raw_record, dict) else {"count": raw_record}
+            count = self._to_nonnegative_int(record.get("count", 0))
+            bonus = self._to_nonnegative_int(record.get("bonus", 0))
+            checkin_at = self._to_nonnegative_int(record.get("checkin_at", 0))
+            normalized_record = {
+                "user_id": user_id,
+                "count": count,
+                "bonus": bonus,
+                "checkin_at": checkin_at,
+                "last_at": self._to_nonnegative_int(record.get("last_at", 0)),
+            }
+            for key in ("display_name", "group_id", "access_level"):
+                value = str(record.get(key, "")).strip()
+                if value:
+                    normalized_record[key] = value
+            normalized_users[user_id] = normalized_record
+
+        return {
+            "date": today,
+            "total": sum(record["count"] for record in normalized_users.values()),
+            "users": normalized_users,
+        }
+
+    def _current_usage_stats(self) -> Dict[str, Any]:
+        self._usage_stats = self._normalize_usage_stats(self._usage_stats)
+        return self._usage_stats
+
+    def _persist_usage_stats(self) -> None:
+        os.makedirs(self.data_dir, exist_ok=True)
+        tmp_path = f"{self.usage_stats_path}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as file:
+                json.dump(self._current_usage_stats(), file, ensure_ascii=False, indent=4)
+            os.replace(tmp_path, self.usage_stats_path)
+        except Exception as exc:
+            logger.error(f"[OmniDraw] 生图统计保存失败: {exc}", exc_info=True)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+
+    def _usage_stats_for_page(self) -> Dict[str, Any]:
+        stats = self._current_usage_stats()
+        users = sorted(
+            stats.get("users", {}).values(),
+            key=lambda item: (-self._to_nonnegative_int(item.get("count", 0)), str(item.get("user_id", ""))),
+        )
+        limit = self._daily_image_limit()
+        return {
+            "date": stats.get("date", self._today_key()),
+            "total": stats.get("total", 0),
+            "users": users,
+            "quota": {
+                "enabled": limit > 0,
+                "daily_limit": limit,
+                "checkin_enabled": bool(getattr(self.plugin_config, "enable_checkin", False)),
+                "checkin_bonus_min": self._to_nonnegative_int(getattr(self.plugin_config, "checkin_bonus_min", 1), 1),
+                "checkin_bonus_max": self._to_nonnegative_int(getattr(self.plugin_config, "checkin_bonus_max", 3), 3),
+            },
+        }
 
     def _clean_runtime_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(config, dict):
@@ -266,8 +366,23 @@ class OmniDrawPlugin(Star):
             return True
 
         permission_config = config.get("permission_config")
-        if isinstance(permission_config, dict) and str(permission_config.get("allowed_users", "")).strip():
-            return True
+        if isinstance(permission_config, dict):
+            for key in ("allowed_users", "unlimited_users", "user_whitelist", "blocked_users", "user_blacklist", "unlimited_groups", "group_whitelist"):
+                if str(permission_config.get(key, "")).strip():
+                    return True
+
+        usage_config = config.get("usage_config")
+        if isinstance(usage_config, dict):
+            if bool(usage_config.get("enable_daily_limit")):
+                return True
+            if self._to_nonnegative_int(usage_config.get("daily_image_limit", 20), 20) != 20:
+                return True
+            if bool(usage_config.get("enable_checkin")):
+                return True
+            if self._to_nonnegative_int(usage_config.get("checkin_bonus_min", 1), 1) != 1:
+                return True
+            if self._to_nonnegative_int(usage_config.get("checkin_bonus_max", 3), 3) != 3:
+                return True
 
         router_config = config.get("router_config")
         if isinstance(router_config, dict):
@@ -407,6 +522,10 @@ class OmniDrawPlugin(Star):
     async def get_config_handler(self):
         self._refresh_from_native_config_if_changed()
         return jsonify(self._config_for_page())
+
+    async def get_usage_stats_handler(self):
+        self._refresh_from_native_config_if_changed()
+        return jsonify({"success": True, "stats": self._usage_stats_for_page()})
 
     def _config_for_page(self) -> Dict[str, Any]:
         self._page_image_tokens.clear()
@@ -703,12 +822,247 @@ class OmniDrawPlugin(Star):
         limit = self.plugin_config.max_batch_count or DEFAULT_BATCH_LIMIT
         return min(max(1, parsed_count), max(1, limit))
 
+    def _get_event_user_id(self, event: AstrMessageEvent) -> str:
+        try:
+            sender_id = event.get_sender_id()
+            if sender_id:
+                return str(sender_id)
+        except Exception:
+            pass
+
+        message_obj = getattr(event, "message_obj", None)
+        for attr in ("sender_id", "user_id", "member_id"):
+            value = getattr(event, attr, None) or getattr(message_obj, attr, None)
+            if value:
+                return str(value)
+        return "unknown"
+
+    def _get_event_user_label(self, event: AstrMessageEvent) -> str:
+        for method_name in ("get_sender_name", "get_sender_nickname"):
+            method = getattr(event, method_name, None)
+            if callable(method):
+                try:
+                    value = method()
+                    if value:
+                        return str(value)
+                except Exception:
+                    pass
+
+        message_obj = getattr(event, "message_obj", None)
+        sender = getattr(message_obj, "sender", None)
+        for obj in (sender, message_obj, event):
+            for attr in ("nickname", "card", "username", "name", "sender_name"):
+                value = getattr(obj, attr, None)
+                if value:
+                    return str(value)
+        return ""
+
+    def _event_is_group_message(self, event: AstrMessageEvent) -> bool:
+        method = getattr(event, "get_message_type", None)
+        if callable(method):
+            try:
+                value = method()
+                raw_value = getattr(value, "value", value)
+                if "group" in str(raw_value).lower():
+                    return True
+            except Exception:
+                pass
+
+        message_obj = getattr(event, "message_obj", None)
+        for obj in (message_obj, event):
+            for attr in ("type", "message_type"):
+                value = getattr(obj, attr, None)
+                raw_value = getattr(value, "value", value)
+                if "group" in str(raw_value).lower():
+                    return True
+        return False
+
+    def _get_event_group_id(self, event: AstrMessageEvent) -> str:
+        for method_name in ("get_group_id",):
+            method = getattr(event, method_name, None)
+            if callable(method):
+                try:
+                    value = method()
+                    if value:
+                        return str(value)
+                except Exception:
+                    pass
+
+        message_obj = getattr(event, "message_obj", None)
+        for obj in (message_obj, event):
+            for attr in ("group_id", "group", "room_id", "channel_id"):
+                value = getattr(obj, attr, None)
+                if value:
+                    return str(value)
+
+        if self._event_is_group_message(event):
+            for method_name in ("get_session_id",):
+                method = getattr(event, method_name, None)
+                if callable(method):
+                    try:
+                        value = str(method() or "").strip()
+                        if value:
+                            return value
+                    except Exception:
+                        pass
+            for obj in (event, message_obj):
+                value = str(getattr(obj, "session_id", "") or "").strip()
+                if value:
+                    return value
+
+        for method_name in ("get_session_id",):
+            method = getattr(event, method_name, None)
+            if callable(method):
+                try:
+                    value = method()
+                    group_id = self._extract_group_id_from_text(value)
+                    if group_id:
+                        return group_id
+                except Exception:
+                    pass
+
+        for obj in (event, message_obj):
+            for attr in ("unified_msg_origin", "session_id", "session", "origin"):
+                group_id = self._extract_group_id_from_text(getattr(obj, attr, ""))
+                if group_id:
+                    return group_id
+        return ""
+
+    def _extract_group_id_from_text(self, value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        parts = text.split(":", 2)
+        if len(parts) == 3 and "group" in parts[1].lower():
+            return parts[2].strip()
+        lowered = text.lower()
+        if "group" not in lowered and "群" not in text:
+            return ""
+        labelled_match = re.search(r"(?:group_id|group|群)[=:_\-\s]+(\d+)", text, flags=re.I)
+        if labelled_match:
+            return labelled_match.group(1)
+        matches = re.findall(r"\d+", text)
+        return matches[0] if matches else ""
+
+    def _config_id_set(self, value: Any) -> set:
+        if isinstance(value, (list, tuple, set)):
+            source = value
+        else:
+            source = re.split(r"[\s,]+", str(value or "").replace("\r", "\n"))
+        return {str(item).strip() for item in source if str(item).strip()}
+
+    def _access_status(self, event: AstrMessageEvent, refresh: bool = True) -> Dict[str, Any]:
+        if refresh:
+            self._refresh_from_native_config_if_changed()
+
+        user_id = self._get_event_user_id(event)
+        group_id = self._get_event_group_id(event)
+        blocked_users = self._config_id_set(getattr(self.plugin_config, "blocked_users", []))
+        unlimited_users = self._config_id_set(getattr(self.plugin_config, "unlimited_users", []))
+        if not unlimited_users:
+            unlimited_users = self._config_id_set(getattr(self.plugin_config, "allowed_users", []))
+        unlimited_groups = self._config_id_set(getattr(self.plugin_config, "unlimited_groups", []))
+
+        status = {
+            "user_id": user_id,
+            "group_id": group_id,
+            "allowed": True,
+            "unlimited": False,
+            "level": "limited",
+            "reason": "",
+        }
+        if user_id in blocked_users:
+            status.update({"allowed": False, "level": "blocked_user", "reason": "用户黑名单"})
+            return status
+        if user_id in unlimited_users:
+            status.update({"unlimited": True, "level": "unlimited_user", "reason": "用户白名单"})
+            return status
+        if group_id and group_id in unlimited_groups:
+            status.update({"unlimited": True, "level": "unlimited_group", "reason": "群组白名单"})
+            return status
+        return status
+
+    def _permission_denied_message(self, event: AstrMessageEvent) -> str:
+        status = self._access_status(event)
+        if status.get("allowed", True):
+            return ""
+        return f"{MessageEmoji.WARNING} 你已被加入用户黑名单，无法使用万象画卷。"
+
+    def _daily_image_limit(self) -> int:
+        if not getattr(self.plugin_config, "enable_daily_limit", False):
+            return 0
+        configured_limit = self._to_nonnegative_int(getattr(self.plugin_config, "daily_image_limit", 20), 20)
+        return max(1, configured_limit)
+
+    def _image_quota_state(self, event: AstrMessageEvent) -> Dict[str, Any]:
+        status = self._access_status(event)
+        limit = self._daily_image_limit()
+        user_id = status.get("user_id") or self._get_event_user_id(event)
+        record = self._current_usage_stats().get("users", {}).get(user_id, {})
+        used = self._to_nonnegative_int(record.get("count", 0))
+        bonus = self._to_nonnegative_int(record.get("bonus", 0))
+        effective_limit = 0 if status.get("unlimited") or limit <= 0 else limit + bonus
+        return {
+            **status,
+            "base_limit": limit,
+            "bonus": bonus,
+            "effective_limit": effective_limit,
+            "used": used,
+            "remaining": max(0, effective_limit - used) if effective_limit > 0 else 0,
+            "checkin_at": self._to_nonnegative_int(record.get("checkin_at", 0)),
+        }
+
+    def _image_quota_error_message(self, event: AstrMessageEvent, requested_count: int = 1) -> str:
+        quota = self._image_quota_state(event)
+        if not quota.get("allowed", True):
+            return self._permission_denied_message(event)
+        if quota.get("unlimited") or quota.get("base_limit", 0) <= 0:
+            return ""
+
+        requested_count = max(1, self._to_nonnegative_int(requested_count, 1))
+        used = quota.get("used", 0)
+        base_limit = quota.get("base_limit", 0)
+        bonus = quota.get("bonus", 0)
+        effective_limit = quota.get("effective_limit", base_limit)
+        remaining = max(0, effective_limit - used)
+        if requested_count <= remaining:
+            return ""
+
+        limit_text = f"{effective_limit} 张"
+        if bonus:
+            limit_text = f"{effective_limit} 张（基础 {base_limit} + 签到 {bonus}）"
+        return (
+            f"{MessageEmoji.WARNING} 今日生图额度不足：你已使用 {used}/{limit_text}，"
+            f"本次需要 {requested_count} 张，剩余 {remaining} 张。"
+        )
+
+    def _record_generated_images(self, event: AstrMessageEvent, count: int = 1) -> None:
+        count = self._to_nonnegative_int(count)
+        if count <= 0:
+            return
+
+        stats = self._current_usage_stats()
+        status = self._access_status(event, refresh=False)
+        user_id = status.get("user_id") or self._get_event_user_id(event)
+        users = stats.setdefault("users", {})
+        record = users.setdefault(user_id, {"user_id": user_id, "count": 0, "last_at": 0, "bonus": 0, "checkin_at": 0})
+        record["user_id"] = user_id
+        record["count"] = self._to_nonnegative_int(record.get("count", 0)) + count
+        record["bonus"] = self._to_nonnegative_int(record.get("bonus", 0))
+        record["checkin_at"] = self._to_nonnegative_int(record.get("checkin_at", 0))
+        record["last_at"] = int(time.time())
+        record["access_level"] = str(status.get("level") or "limited")
+        group_id = status.get("group_id") or self._get_event_group_id(event)
+        if group_id:
+            record["group_id"] = group_id
+        display_name = self._get_event_user_label(event).strip()
+        if display_name and display_name != user_id:
+            record["display_name"] = display_name
+        stats["total"] = sum(self._to_nonnegative_int(item.get("count", 0)) for item in users.values())
+        self._persist_usage_stats()
+
     def _has_permission(self, event: AstrMessageEvent) -> bool:
-        self._refresh_from_native_config_if_changed()
-        allowed = self.plugin_config.allowed_users
-        if not allowed:
-            return True
-        return str(event.get_sender_id()) in allowed
+        return bool(self._access_status(event).get("allowed", True))
 
     def _get_event_text(self, event: AstrMessageEvent) -> str:
         text = getattr(event, "message_str", "") or getattr(getattr(event, "message_obj", None), "message_str", "")
@@ -830,16 +1184,74 @@ class OmniDrawPlugin(Star):
             "/切换人设 [序号/ID/名称]\n"
             "/切换链路 [画图/自拍/视频/副脑] [节点ID]\n"
             "/切换模型 [画图/自拍/视频] [序号或名称]\n"
+            "/签到\n"
             "/万象帮助\n\n"
         )
         if self.plugin_config.presets:
             msg += "✨ 极速宏:\n" + "\n".join([f"/{preset}" for preset in self.plugin_config.presets.keys()])
         yield event.plain_result(msg)
 
+    @filter.command("签到")
+    @handle_errors
+    async def cmd_checkin(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        status = self._access_status(event)
+        if not status.get("allowed", True):
+            yield event.plain_result(self._permission_denied_message(event))
+            return
+        if status.get("unlimited"):
+            yield event.plain_result(f"{MessageEmoji.INFO} 你已命中{status.get('reason') or '白名单'}，今日生图不受次数限制，无需签到。")
+            return
+        if self._daily_image_limit() <= 0:
+            yield event.plain_result(f"{MessageEmoji.INFO} 当前未启用每日生图限制，无需签到。")
+            return
+        if not getattr(self.plugin_config, "enable_checkin", False):
+            yield event.plain_result(f"{MessageEmoji.INFO} 当前未启用签到领额度。")
+            return
+
+        stats = self._current_usage_stats()
+        users = stats.setdefault("users", {})
+        user_id = status.get("user_id") or self._get_event_user_id(event)
+        record = users.setdefault(user_id, {"user_id": user_id, "count": 0, "last_at": 0, "bonus": 0, "checkin_at": 0})
+        used = self._to_nonnegative_int(record.get("count", 0))
+        bonus = self._to_nonnegative_int(record.get("bonus", 0))
+        checkin_at = self._to_nonnegative_int(record.get("checkin_at", 0))
+        base_limit = self._daily_image_limit()
+        if checkin_at > 0:
+            yield event.plain_result(
+                f"{MessageEmoji.INFO} 今日已经签到过啦：额外额度 +{bonus} 张，"
+                f"当前已使用 {used}/{base_limit + bonus} 张。"
+            )
+            return
+
+        bonus_min = self._to_nonnegative_int(getattr(self.plugin_config, "checkin_bonus_min", 1), 1)
+        bonus_max = self._to_nonnegative_int(getattr(self.plugin_config, "checkin_bonus_max", 3), 3)
+        if bonus_max < bonus_min:
+            bonus_max = bonus_min
+        gained = random.randint(bonus_min, bonus_max) if bonus_max > bonus_min else bonus_min
+        record["user_id"] = user_id
+        record["count"] = used
+        record["bonus"] = bonus + gained
+        record["checkin_at"] = int(time.time())
+        record["access_level"] = "limited"
+        group_id = status.get("group_id") or self._get_event_group_id(event)
+        if group_id:
+            record["group_id"] = group_id
+        display_name = self._get_event_user_label(event).strip()
+        if display_name and display_name != user_id:
+            record["display_name"] = display_name
+        stats["total"] = sum(self._to_nonnegative_int(item.get("count", 0)) for item in users.values())
+        self._persist_usage_stats()
+        yield event.plain_result(
+            f"{MessageEmoji.SUCCESS} 签到成功，今日额外生图额度 +{gained} 张。"
+            f"当前额度 {used}/{base_limit + bonus + gained} 张。"
+        )
+
     @filter.command("人设")
     @handle_errors
     async def cmd_persona_list(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        if not self._has_permission(event):
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            yield event.plain_result(permission_error)
             return
 
         msg = "🎭 可用人设:\n"
@@ -860,7 +1272,9 @@ class OmniDrawPlugin(Star):
         p4: str = "",
         p5: str = "",
     ) -> AsyncGenerator[Any, None]:
-        if not self._has_permission(event):
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            yield event.plain_result(permission_error)
             return
 
         fallback = " ".join(str(item) for item in [p1, p2, p3, p4, p5] if item).strip()
@@ -890,7 +1304,9 @@ class OmniDrawPlugin(Star):
         target: str = "",
         node_id: str = "",
     ) -> AsyncGenerator[Any, None]:
-        if not self._has_permission(event):
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            yield event.plain_result(permission_error)
             return
 
         target_map = {"画图": "text2img", "自拍": "selfie", "视频": "video", "副脑": "optimizer"}
@@ -920,7 +1336,9 @@ class OmniDrawPlugin(Star):
         target: str = "",
         model_idx: str = "",
     ) -> AsyncGenerator[Any, None]:
-        if not self._has_permission(event):
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            yield event.plain_result(permission_error)
             return
 
         target_map = {"画图": "text2img", "自拍": "selfie", "视频": "video"}
@@ -980,7 +1398,15 @@ class OmniDrawPlugin(Star):
         if not match:
             return
         cmd_name = match.group(1).strip()
-        if cmd_name not in self.plugin_config.presets or not self._has_permission(event):
+        if cmd_name not in self.plugin_config.presets:
+            return
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            yield event.plain_result(permission_error)
+            return
+        quota_error = self._image_quota_error_message(event, 1)
+        if quota_error:
+            yield event.plain_result(quota_error)
             return
 
         raw_refs = self._get_event_images(event)
@@ -996,6 +1422,7 @@ class OmniDrawPlugin(Star):
             async with aiohttp.ClientSession() as session:
                 chain_manager = ChainManager(self.plugin_config, session)
                 image_url = await chain_manager.run_chain("text2img", preset_prompt, user_refs=safe_refs)
+            self._record_generated_images(event, 1)
             yield event.chain_result([self._create_image_component(image_url)])
         except Exception as exc:
             yield event.plain_result(f"💥 绘制失败: {exc}")
@@ -1016,7 +1443,13 @@ class OmniDrawPlugin(Star):
         p9: str = "",
         p10: str = "",
     ) -> AsyncGenerator[Any, None]:
-        if not self._has_permission(event):
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            yield event.plain_result(permission_error)
+            return
+        quota_error = self._image_quota_error_message(event, 1)
+        if quota_error:
+            yield event.plain_result(quota_error)
             return
 
         fallback = " ".join(str(item) for item in [p1, p2, p3, p4, p5, p6, p7, p8, p9, p10] if item).strip()
@@ -1042,6 +1475,7 @@ class OmniDrawPlugin(Star):
         async with aiohttp.ClientSession() as session:
             chain_manager = ChainManager(self.plugin_config, session)
             image_url = await chain_manager.run_chain("text2img", prompt, **kwargs)
+        self._record_generated_images(event, 1)
         yield event.chain_result([self._create_image_component(image_url)])
 
     @filter.command("自拍")
@@ -1060,7 +1494,13 @@ class OmniDrawPlugin(Star):
         p9: str = "",
         p10: str = "",
     ) -> AsyncGenerator[Any, None]:
-        if not self._has_permission(event):
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            yield event.plain_result(permission_error)
+            return
+        quota_error = self._image_quota_error_message(event, 1)
+        if quota_error:
+            yield event.plain_result(quota_error)
             return
 
         fallback = " ".join(str(item) for item in [p1, p2, p3, p4, p5, p6, p7, p8, p9, p10] if item).strip()
@@ -1089,6 +1529,7 @@ class OmniDrawPlugin(Star):
         async with aiohttp.ClientSession() as session:
             chain_manager = ChainManager(self.plugin_config, session)
             image_url = await chain_manager.run_chain(chain_to_use, final_prompt, **extra_kwargs)
+        self._record_generated_images(event, 1)
         yield event.chain_result([self._create_image_component(image_url)])
 
     @filter.command("视频")
@@ -1107,7 +1548,9 @@ class OmniDrawPlugin(Star):
         p9: str = "",
         p10: str = "",
     ) -> AsyncGenerator[Any, None]:
-        if not self._has_permission(event):
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            yield event.plain_result(permission_error)
             return
 
         fallback = " ".join(str(item) for item in [p1, p2, p3, p4, p5, p6, p7, p8, p9, p10] if item).strip()
@@ -1148,11 +1591,15 @@ class OmniDrawPlugin(Star):
             size (string): 分辨率或尺寸参数，例如 1024x1024。
             extra_params (string): 附加模型参数透传，格式为 --key value，可同时传多个。
         """
-        if not self._has_permission(event):
-            return "无权限调用。"
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            return permission_error
 
         try:
             count = self._normalize_count(count)
+            quota_error = self._image_quota_error_message(event, count)
+            if quota_error:
+                return quota_error
             optimized_actions = await self.prompt_optimizer.optimize(action or "看着镜头微笑", count)
             raw_refs = self._get_event_images(event)
             target_refs = raw_refs if raw_refs else self.plugin_config.persona_ref_images
@@ -1181,6 +1628,7 @@ class OmniDrawPlugin(Star):
             if not valid_urls:
                 raise RuntimeError("所有绘图节点请求失败")
             sent = await self._send_generated_images(event, valid_urls)
+            self._record_generated_images(event, sent)
             return f"系统提示：已成功生成并下发了 {sent} 张图。"
         except Exception as exc:
             logger.error(f"[OmniDraw] LLM 自拍工具失败: {exc}", exc_info=True)
@@ -1205,11 +1653,15 @@ class OmniDrawPlugin(Star):
             size (string): 分辨率或尺寸参数，例如 1024x1024。
             extra_params (string): 其他模型参数透传，格式为 --key value，可同时传多个。
         """
-        if not self._has_permission(event):
-            return "无权限调用。"
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            return permission_error
 
         try:
             count = self._normalize_count(count)
+            quota_error = self._image_quota_error_message(event, count)
+            if quota_error:
+                return quota_error
             optimized_actions = await self.prompt_optimizer.optimize(prompt, count)
             safe_refs = await self._process_and_save_images(self._get_event_images(event))
 
@@ -1229,6 +1681,7 @@ class OmniDrawPlugin(Star):
             if not valid_urls:
                 raise RuntimeError("所有绘图节点请求失败")
             sent = await self._send_generated_images(event, valid_urls)
+            self._record_generated_images(event, sent)
             return f"系统提示：已成功下发 {sent} 张图。"
         except Exception as exc:
             logger.error(f"[OmniDraw] LLM 画图工具失败: {exc}", exc_info=True)
@@ -1253,8 +1706,9 @@ class OmniDrawPlugin(Star):
             size (string): 分辨率或尺寸参数，例如 1280x720、1920x1080。
             extra_params (string): 附加参数，透传至底层视频引擎，格式为 --key value。
         """
-        if not self._has_permission(event):
-            return "无权限调用。"
+        permission_error = self._permission_denied_message(event)
+        if permission_error:
+            return permission_error
 
         try:
             count = self._normalize_count(count)

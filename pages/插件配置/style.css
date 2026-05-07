@@ -228,7 +228,7 @@ select:focus-visible {
 
 .sidebar-metrics {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 8px;
     margin-top: auto;
 }
@@ -792,6 +792,91 @@ select.input-modern {
     text-align: center;
 }
 
+.usage-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.usage-summary div,
+.usage-user-row {
+    border: 1px solid var(--panel-border);
+    border-top-color: var(--panel-highlight);
+    background: rgba(255, 255, 255, 0.34);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.58);
+}
+
+.usage-summary div {
+    min-width: 0;
+    padding: 14px 10px;
+    border-radius: var(--radius-sm);
+    text-align: center;
+}
+
+.usage-summary span {
+    display: block;
+    overflow: hidden;
+    color: var(--text-main);
+    font-size: 22px;
+    font-weight: 850;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.usage-summary small {
+    display: block;
+    margin-top: 4px;
+    color: var(--text-soft);
+    font-size: 11px;
+    font-weight: 760;
+}
+
+.usage-user-list {
+    display: grid;
+    gap: 10px;
+}
+
+.usage-user-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px;
+    min-height: 62px;
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+}
+
+.usage-user-main {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.usage-user-main strong {
+    overflow: hidden;
+    color: var(--text-main);
+    font-size: 14px;
+    font-weight: 820;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.usage-user-main small {
+    overflow: hidden;
+    color: var(--text-soft);
+    font-size: 11px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.usage-user-row > span {
+    color: var(--accent);
+    font-size: 18px;
+    font-weight: 850;
+}
+
 .multi-upload-container {
     display: flex;
     flex-wrap: wrap;
@@ -1347,6 +1432,11 @@ select.input-modern {
 
     .model-row {
         flex-direction: column;
+    }
+
+    .usage-summary,
+    .usage-user-row {
+        grid-template-columns: 1fr;
     }
 
     .node-id-input {
