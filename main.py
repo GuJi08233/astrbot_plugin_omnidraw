@@ -46,7 +46,9 @@ except Exception:
 
 from .constants import (
     DEFAULT_BATCH_LIMIT,
+    DEFAULT_DRAW_ERROR_MESSAGE,
     DEFAULT_DRAW_PENDING_MESSAGE,
+    DEFAULT_SELFIE_ERROR_MESSAGE,
     DEFAULT_SELFIE_PENDING_MESSAGE,
     MAX_IMAGE_BYTES,
     MessageEmoji,
@@ -444,6 +446,8 @@ class OmniDrawPlugin(Star):
             reply_defaults = {
                 "draw_pending_message": DEFAULT_DRAW_PENDING_MESSAGE,
                 "selfie_pending_message": DEFAULT_SELFIE_PENDING_MESSAGE,
+                "draw_error_message": DEFAULT_DRAW_ERROR_MESSAGE,
+                "selfie_error_message": DEFAULT_SELFIE_ERROR_MESSAGE,
             }
             for key, default in reply_defaults.items():
                 value = str(reply_config.get(key, "")).strip()
@@ -1490,7 +1494,7 @@ class OmniDrawPlugin(Star):
         _, parsed = self.cmd_parser.parse(extra_params)
         return parsed
 
-    def _format_pending_message(self, template: str, default: str, **values: Any) -> str:
+    def _format_reply_message(self, template: str, default: str, **values: Any) -> str:
         raw_template = str(template or "").strip() or default
 
         class _SafeValues(dict):
@@ -1503,6 +1507,39 @@ class OmniDrawPlugin(Star):
         except Exception:
             formatted = raw_template
         return formatted.strip() or default
+
+    def _format_pending_message(self, template: str, default: str, **values: Any) -> str:
+        return self._format_reply_message(template, default, **values)
+
+    def _build_command_error_message(self, func_name: str, exc: Exception, error_kind: str = "exception") -> Optional[str]:
+        func_name = str(func_name or "")
+        error_text = str(exc or "").strip() or (
+            "操作超时，请稍后重试" if error_kind == "timeout" else "操作失败，请联系管理员"
+        )
+        error_type = type(exc).__name__ if exc is not None else ""
+
+        if func_name in {"cmd_draw", "on_message_preset"}:
+            command = "画" if func_name == "cmd_draw" else "宏指令"
+            return self._format_reply_message(
+                self.plugin_config.draw_error_message,
+                DEFAULT_DRAW_ERROR_MESSAGE,
+                command=command,
+                error=error_text,
+                error_type=error_type,
+                persona_name=getattr(self.plugin_config, "persona_name", ""),
+            )
+
+        if func_name == "cmd_selfie":
+            return self._format_reply_message(
+                self.plugin_config.selfie_error_message,
+                DEFAULT_SELFIE_ERROR_MESSAGE,
+                command="自拍",
+                error=error_text,
+                error_type=error_type,
+                persona_name=getattr(self.plugin_config, "persona_name", ""),
+            )
+
+        return None
 
     async def _send_generated_images(self, event: AstrMessageEvent, urls: Iterable[str]) -> int:
         sent = 0
@@ -1787,7 +1824,9 @@ class OmniDrawPlugin(Star):
             self._record_generated_images(event, 1)
             yield event.chain_result([self._create_image_component(image_url)])
         except Exception as exc:
-            yield event.plain_result(f"💥 绘制失败: {exc}")
+            yield event.plain_result(
+                self._build_command_error_message("on_message_preset", exc) or f"💥 绘制失败: {exc}"
+            )
 
     @filter.command("画")
     @handle_errors

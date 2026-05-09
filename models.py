@@ -9,11 +9,16 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .constants import DEFAULT_DRAW_PENDING_MESSAGE, DEFAULT_SELFIE_PENDING_MESSAGE
+from .constants import (
+    DEFAULT_DRAW_ERROR_MESSAGE,
+    DEFAULT_DRAW_PENDING_MESSAGE,
+    DEFAULT_SELFIE_ERROR_MESSAGE,
+    DEFAULT_SELFIE_PENDING_MESSAGE,
+)
 
 PLUGIN_NAME = "astrbot_plugin_omnidraw"
 PLUGIN_AUTHOR = "雪碧bir"
-PLUGIN_VERSION = "3.3.9"
+PLUGIN_VERSION = "3.3.10"
 DEFAULT_CACHE_CLEANUP_INTERVAL_HOURS = 24
 DEFAULT_MAX_CACHE_SIZE_MB = 512
 
@@ -82,6 +87,8 @@ class PluginConfig:
     optimizer_custom_prompt: str
     draw_pending_message: str
     selfie_pending_message: str
+    draw_error_message: str
+    selfie_error_message: str
     verbose_report: bool
 
     @classmethod
@@ -198,8 +205,18 @@ class PluginConfig:
             reply_conf.get("selfie_pending_message"),
             DEFAULT_SELFIE_PENDING_MESSAGE,
         )
+        draw_error_message = _normalize_reply_text(
+            reply_conf.get("draw_error_message"),
+            DEFAULT_DRAW_ERROR_MESSAGE,
+        )
+        selfie_error_message = _normalize_reply_text(
+            reply_conf.get("selfie_error_message"),
+            DEFAULT_SELFIE_ERROR_MESSAGE,
+        )
         reply_conf["draw_pending_message"] = draw_pending_message
         reply_conf["selfie_pending_message"] = selfie_pending_message
+        reply_conf["draw_error_message"] = draw_error_message
+        reply_conf["selfie_error_message"] = selfie_error_message
 
         return cls(
             providers=providers,
@@ -233,6 +250,8 @@ class PluginConfig:
             optimizer_custom_prompt=str(opt_conf.get("optimizer_custom_prompt", "")),
             draw_pending_message=draw_pending_message,
             selfie_pending_message=selfie_pending_message,
+            draw_error_message=draw_error_message,
+            selfie_error_message=selfie_error_message,
             verbose_report=_to_bool(config_dict.get("verbose_report", False)),
         )
 

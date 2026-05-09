@@ -7,6 +7,8 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 DEFAULT_BATCH_LIMIT = 10
 DEFAULT_DRAW_PENDING_MESSAGE = "🎨 收到灵感，正在绘制..."
 DEFAULT_SELFIE_PENDING_MESSAGE = "ℹ️ 正在为「{persona_name}」生成自拍，请稍候..."
+DEFAULT_DRAW_ERROR_MESSAGE = "💥 绘制失败: {error}"
+DEFAULT_SELFIE_ERROR_MESSAGE = "💥 自拍生成失败: {error}"
 
 class APIType:
     """接口类型枚举"""

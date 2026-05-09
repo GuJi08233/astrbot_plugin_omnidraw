@@ -1,6 +1,8 @@
 const defaultReplyConfig = {
     draw_pending_message: "🎨 收到灵感，正在绘制...",
-    selfie_pending_message: "ℹ️ 正在为「{persona_name}」生成自拍，请稍候..."
+    selfie_pending_message: "ℹ️ 正在为「{persona_name}」生成自拍，请稍候...",
+    draw_error_message: "💥 绘制失败: {error}",
+    selfie_error_message: "💥 自拍生成失败: {error}"
 };
 
 const defaultCacheConfig = {
@@ -226,7 +228,9 @@ function normalizeCacheConfig(value = {}) {
 function normalizeReplyConfig(value = {}) {
     return {
         draw_pending_message: String(value.draw_pending_message ?? defaultReplyConfig.draw_pending_message).trim() || defaultReplyConfig.draw_pending_message,
-        selfie_pending_message: String(value.selfie_pending_message ?? defaultReplyConfig.selfie_pending_message).trim() || defaultReplyConfig.selfie_pending_message
+        selfie_pending_message: String(value.selfie_pending_message ?? defaultReplyConfig.selfie_pending_message).trim() || defaultReplyConfig.selfie_pending_message,
+        draw_error_message: String(value.draw_error_message ?? defaultReplyConfig.draw_error_message).trim() || defaultReplyConfig.draw_error_message,
+        selfie_error_message: String(value.selfie_error_message ?? defaultReplyConfig.selfie_error_message).trim() || defaultReplyConfig.selfie_error_message
     };
 }
 
@@ -890,6 +894,8 @@ function bindBasicFields() {
     byId("cache_max_mb").value = state.cache_config.max_cache_size_mb || defaultCacheConfig.max_cache_size_mb;
     byId("reply_draw_pending").value = state.reply_config.draw_pending_message || defaultReplyConfig.draw_pending_message;
     byId("reply_selfie_pending").value = state.reply_config.selfie_pending_message || defaultReplyConfig.selfie_pending_message;
+    byId("reply_draw_error").value = state.reply_config.draw_error_message || defaultReplyConfig.draw_error_message;
+    byId("reply_selfie_error").value = state.reply_config.selfie_error_message || defaultReplyConfig.selfie_error_message;
     byId("route_img").value = routePrimary("text2img") || "node_1";
     byId("route_selfie").value = routePrimary("selfie") || "node_1";
     byId("route_video").value = routePrimary("video") || "video_node_1";
@@ -922,6 +928,8 @@ function readBasicFields() {
     state.cache_config.max_cache_size_mb = Math.max(1, parseInt(byId("cache_max_mb").value, 10) || defaultCacheConfig.max_cache_size_mb);
     state.reply_config.draw_pending_message = byId("reply_draw_pending").value.trim() || defaultReplyConfig.draw_pending_message;
     state.reply_config.selfie_pending_message = byId("reply_selfie_pending").value.trim() || defaultReplyConfig.selfie_pending_message;
+    state.reply_config.draw_error_message = byId("reply_draw_error").value.trim() || defaultReplyConfig.draw_error_message;
+    state.reply_config.selfie_error_message = byId("reply_selfie_error").value.trim() || defaultReplyConfig.selfie_error_message;
     syncRouteFromHidden("text2img");
     syncRouteFromHidden("selfie");
     syncRouteFromHidden("video");

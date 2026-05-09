@@ -94,7 +94,7 @@
   "reply_config": {
     "description": "指令回复文案",
     "type": "object",
-    "hint": "自定义 /画、/自拍 和宏指令在开始生成前发送的等待回复。留空会自动恢复内置默认文案。",
+    "hint": "自定义 /画、/自拍 和宏指令在开始生成前的等待回复，以及失败时的报错回复。留空会自动恢复内置默认文案。",
     "items": {
       "draw_pending_message": {
         "description": "/画 与宏指令等待回复",
@@ -107,6 +107,18 @@
         "type": "text",
         "hint": "支持占位符：{persona_name}、{user_input}、{prompt}、{ref_count}、{param_count}、{command}。",
         "default": "ℹ️ 正在为「{persona_name}」生成自拍，请稍候..."
+      },
+      "draw_error_message": {
+        "description": "/画 与宏指令失败回复",
+        "type": "text",
+        "hint": "支持占位符：{command}、{error}、{error_type}、{persona_name}。",
+        "default": "💥 绘制失败: {error}"
+      },
+      "selfie_error_message": {
+        "description": "/自拍 失败回复",
+        "type": "text",
+        "hint": "支持占位符：{command}、{error}、{error_type}、{persona_name}。",
+        "default": "💥 自拍生成失败: {error}"
       }
     }
   },
