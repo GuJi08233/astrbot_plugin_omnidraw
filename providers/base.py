@@ -3,28 +3,80 @@ import aiohttp
 import base64
 import mimetypes
 import os
+import threading
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, List
 from astrbot.api import logger
 from ..models import ProviderConfig
 
-class BaseProvider(ABC):
-    # 使用类变量或实例变量存储每个节点的轮询位置
-    _key_indices: Dict[str, int] = {}
+_KEY_ROTATION_LOCK = threading.Lock()
+_KEY_ROTATION_INDEX: Dict[str, int] = {}
 
+
+def normalize_base_url(base_url: str) -> str:
+    return str(base_url or "").rstrip("/")
+
+
+def build_chat_completions_endpoint(base_url: str) -> str:
+    base_url = normalize_base_url(base_url)
+    if not base_url:
+        return ""
+    return f"{base_url}/chat/completions" if base_url.endswith("/v1") else f"{base_url}/v1/chat/completions"
+
+
+def build_video_generations_endpoint(base_url: str) -> str:
+    base_url = normalize_base_url(base_url)
+    if not base_url:
+        return ""
+    return f"{base_url}/videos/generations"
+
+
+def next_api_key(provider_id: str, api_keys: List[str]) -> str:
+    keys = [str(key).strip() for key in api_keys if str(key).strip()]
+    if not provider_id or not keys:
+        return ""
+    with _KEY_ROTATION_LOCK:
+        idx = _KEY_ROTATION_INDEX.get(provider_id, 0)
+        key = keys[idx % len(keys)]
+        _KEY_ROTATION_INDEX[provider_id] = (idx + 1) % len(keys)
+        return key
+
+
+def guess_image_content_type(image_path_or_url: str, content_type: str = "", fallback: str = "image/png") -> str:
+    media_type = str(content_type or "").strip().split(";", 1)[0].strip()
+    if media_type.startswith("image/"):
+        return media_type
+    source = str(image_path_or_url or "")
+    lowered = source.lower()
+    if lowered.startswith("data:"):
+        header = source.split(",", 1)[0]
+        media_type = header[5:].split(";", 1)[0].strip()
+        if media_type.startswith("image/"):
+            return media_type
+    if lowered.endswith(".jpg") or lowered.endswith(".jpeg"):
+        return "image/jpeg"
+    if lowered.endswith(".webp"):
+        return "image/webp"
+    if lowered.endswith(".gif"):
+        return "image/gif"
+    if lowered.endswith(".avif"):
+        return "image/avif"
+    if lowered.endswith(".bmp"):
+        return "image/bmp"
+    if lowered.endswith(".tif") or lowered.endswith(".tiff"):
+        return "image/tiff"
+    guessed = mimetypes.guess_type(source)[0] or ""
+    return guessed if guessed.startswith("image/") else fallback
+
+
+class BaseProvider(ABC):
     def __init__(self, config: ProviderConfig, session: aiohttp.ClientSession):
         self.config = config
         self.session = session
-        if self.config.id not in BaseProvider._key_indices:
-            BaseProvider._key_indices[self.config.id] = 0
+        self._api_keys = [str(key).strip() for key in self.config.api_keys if str(key).strip()]
 
     def get_current_key(self) -> str:
-        if not self.config.api_keys:
-            return ""
-        idx = BaseProvider._key_indices[self.config.id]
-        key = self.config.api_keys[idx % len(self.config.api_keys)]
-        BaseProvider._key_indices[self.config.id] = (idx + 1) % len(self.config.api_keys)
-        return key
+        return next_api_key(self.config.id, self._api_keys)
 
     def encode_local_image_to_base64(self, image_path: str) -> Optional[str]:
         """将本地图片文件转为 API 兼容的 Base64 字符串"""
@@ -35,7 +87,7 @@ class BaseProvider(ABC):
         try:
             with open(image_path, "rb") as image_file:
                 encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                mime_type = mimetypes.guess_type(image_path)[0] or "image/png"
+                mime_type = guess_image_content_type(image_path)
                 return f"data:{mime_type};base64,{encoded_string}"
         except Exception as e:
             logger.error(f"❌ 读取本地图片失败: {e}")

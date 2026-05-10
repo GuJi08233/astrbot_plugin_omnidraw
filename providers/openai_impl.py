@@ -1,11 +1,10 @@
 import aiohttp
 import base64
 import json
-import mimetypes
 from typing import Any
 from astrbot.api import logger
 
-from .base import BaseProvider
+from .base import BaseProvider, guess_image_content_type, normalize_base_url
 
 class OpenAIProvider(BaseProvider):
 
@@ -31,14 +30,10 @@ class OpenAIProvider(BaseProvider):
                 return f.read()
 
     def _content_type(self, image_path_or_url: str) -> str:
-        if image_path_or_url.startswith("data:image/jpeg") or image_path_or_url.lower().endswith((".jpg", ".jpeg")):
-            return "image/jpeg"
-        if image_path_or_url.startswith("data:image/webp") or image_path_or_url.lower().endswith(".webp"):
-            return "image/webp"
-        return mimetypes.guess_type(image_path_or_url)[0] or "image/png"
+        return guess_image_content_type(image_path_or_url)
 
     def _base_without_v1(self, base_url: str) -> str:
-        base_url = base_url.rstrip("/")
+        base_url = normalize_base_url(base_url)
         return base_url[:-3] if base_url.endswith("/v1") else base_url
 
     async def generate_image(self, prompt: str, **kwargs: Any) -> str:
@@ -46,7 +41,7 @@ class OpenAIProvider(BaseProvider):
         if not current_key:
             raise ValueError("节点未配置 API Key！")
 
-        base_url = self.config.base_url.rstrip("/")
+        base_url = normalize_base_url(self.config.base_url)
         ref_images = self.get_reference_images(**kwargs)
 
         logger.info(f"📝 [标准通道] 最终发送给 API 的核心提示词:\n{prompt}")

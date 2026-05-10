@@ -6,11 +6,10 @@ import aiohttp
 import re
 import json
 import base64
-import mimetypes
 from typing import Any
 from astrbot.api import logger
 
-from .base import BaseProvider
+from .base import BaseProvider, build_chat_completions_endpoint, guess_image_content_type
 
 class OpenAIChatProvider(BaseProvider):
 
@@ -25,16 +24,14 @@ class OpenAIChatProvider(BaseProvider):
                 async with self.session.get(image_path_or_url, headers=headers) as resp:
                     if resp.status == 200:
                         image_bytes = await resp.read()
-                        mime_type = resp.headers.get("Content-Type", "image/png").split(";", 1)[0]
-                        if not mime_type.startswith("image/"):
-                            mime_type = "image/png"
+                        mime_type = guess_image_content_type(image_path_or_url, resp.headers.get("Content-Type", "image/png"))
                         return f"data:{mime_type};base64," + base64.b64encode(image_bytes).decode('utf-8')
                     else:
                         logger.error(f"下载网络图片失败，状态码: {resp.status}")
                         return ""
             else:
                 with open(image_path_or_url, "rb") as f:
-                    mime_type = mimetypes.guess_type(image_path_or_url)[0] or "image/png"
+                    mime_type = guess_image_content_type(image_path_or_url)
                     return f"data:{mime_type};base64," + base64.b64encode(f.read()).decode('utf-8')
         except Exception as e:
             logger.error("读取或下载参考图失败: " + str(e))
@@ -107,8 +104,7 @@ class OpenAIChatProvider(BaseProvider):
             "Authorization": "Bearer " + current_key
         }
         
-        base_url = self.config.base_url.rstrip("/")
-        url = base_url + "/v1/chat/completions" if not base_url.endswith("/v1") else base_url + "/chat/completions"
+        url = build_chat_completions_endpoint(self.config.base_url)
         
         timeout_obj = aiohttp.ClientTimeout(total=self.config.timeout)
         async with self.session.post(url, json=payload, headers=headers, timeout=timeout_obj) as response:

@@ -13,6 +13,7 @@ import mimetypes
 import os
 import random
 import re
+import threading
 import time
 import uuid
 from urllib.parse import parse_qs, urlparse
@@ -59,7 +60,7 @@ from .core.persona_manager import PersonaManager
 from .core.prompt_optimizer import PromptOptimizer
 from .core.video_manager import VideoManager
 from .models import PLUGIN_AUTHOR, PLUGIN_NAME, PLUGIN_VERSION, PluginConfig
-from .utils import handle_errors
+from .utils import handle_errors, save_image_bytes, split_data_url
 
 PAGE_PREVIEW_IMAGE_BYTES = 80 * 1024 * 1024
 NATIVE_ACTIVE_PERSONA_FILE_PREFIX = "files/persona_config/persona_ref_image/"
@@ -106,6 +107,8 @@ class OmniDrawPlugin(Star):
         self.usage_stats_path = os.path.join(self.data_dir, "omnidraw_usage_stats.json")
         self._usage_stats = self._load_usage_stats()
         self._background_tasks = set()
+        self._config_lock = threading.RLock()
+        self._usage_lock = threading.RLock()
         self._cache_cleanup_task: Optional[asyncio.Task] = None
         self._page_image_tokens: Dict[str, str] = {}
         self._native_config = config if hasattr(config, "save_config") else None
@@ -239,23 +242,25 @@ class OmniDrawPlugin(Star):
         }
 
     def _current_usage_stats(self) -> Dict[str, Any]:
-        self._usage_stats = self._normalize_usage_stats(self._usage_stats)
-        return self._usage_stats
+        with self._usage_lock:
+            self._usage_stats = self._normalize_usage_stats(self._usage_stats)
+            return self._usage_stats
 
     def _persist_usage_stats(self) -> None:
-        os.makedirs(self.data_dir, exist_ok=True)
-        tmp_path = f"{self.usage_stats_path}.{uuid.uuid4().hex}.tmp"
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as file:
-                json.dump(self._current_usage_stats(), file, ensure_ascii=False, indent=4)
-            os.replace(tmp_path, self.usage_stats_path)
-        except Exception as exc:
-            logger.error(f"[OmniDraw] 生图统计保存失败: {exc}", exc_info=True)
+        with self._usage_lock:
+            os.makedirs(self.data_dir, exist_ok=True)
+            tmp_path = f"{self.usage_stats_path}.{uuid.uuid4().hex}.tmp"
             try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
+                with open(tmp_path, "w", encoding="utf-8") as file:
+                    json.dump(self._current_usage_stats(), file, ensure_ascii=False, indent=4)
+                os.replace(tmp_path, self.usage_stats_path)
+            except Exception as exc:
+                logger.error(f"[OmniDraw] 生图统计保存失败: {exc}", exc_info=True)
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def _usage_stats_for_page(self) -> Dict[str, Any]:
         stats = self._current_usage_stats()
@@ -554,12 +559,13 @@ class OmniDrawPlugin(Star):
         self._prune_cache_if_needed("config_reload")
 
     def _persist_config(self) -> None:
-        os.makedirs(self.data_dir, exist_ok=True)
-        tmp_path = f"{self.config_path}.{uuid.uuid4().hex}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as file:
-            json.dump(self.raw_config, file, ensure_ascii=False, indent=4)
-        os.replace(tmp_path, self.config_path)
-        self._persist_config_mtime = self._get_mtime(self.config_path)
+        with self._config_lock:
+            os.makedirs(self.data_dir, exist_ok=True)
+            tmp_path = f"{self.config_path}.{uuid.uuid4().hex}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as file:
+                json.dump(self.raw_config, file, ensure_ascii=False, indent=4)
+            os.replace(tmp_path, self.config_path)
+            self._persist_config_mtime = self._get_mtime(self.config_path)
 
     def _safe_update_context_config(self) -> None:
         if self._native_config is not None and hasattr(self._native_config, "save_config"):
@@ -584,23 +590,24 @@ class OmniDrawPlugin(Star):
     def _refresh_from_native_config_if_changed(self) -> None:
         if not self._native_config_path:
             return
-        current_mtime = self._get_mtime(self._native_config_path)
-        current_signature = self._file_signature(self._native_config_path)
-        if current_signature and current_signature == self._native_config_signature:
-            return
-        native_config = self._clean_runtime_config(self._load_json_file(self._native_config_path))
-        if not native_config:
+        with self._config_lock:
+            current_mtime = self._get_mtime(self._native_config_path)
+            current_signature = self._file_signature(self._native_config_path)
+            if current_signature and current_signature == self._native_config_signature:
+                return
+            native_config = self._clean_runtime_config(self._load_json_file(self._native_config_path))
+            if not native_config:
+                self._native_config_mtime = current_mtime
+                self._native_config_signature = current_signature
+                return
+            self._apply_runtime_config(native_config)
+            self._persist_config()
             self._native_config_mtime = current_mtime
             self._native_config_signature = current_signature
-            return
-        self._apply_runtime_config(native_config)
-        self._persist_config()
-        self._native_config_mtime = current_mtime
-        self._native_config_signature = current_signature
-        if self._native_config is not None:
-            self._native_config.clear()
-            self._native_config.update(self._config_for_native_page())
-        logger.info("[OmniDraw] 已从 AstrBot 原生配置热同步最新设置。")
+            if self._native_config is not None:
+                self._native_config.clear()
+                self._native_config.update(self._config_for_native_page())
+            logger.info("[OmniDraw] 已从 AstrBot 原生配置热同步最新设置。")
 
     async def get_config_handler(self):
         self._refresh_from_native_config_if_changed()
@@ -608,11 +615,13 @@ class OmniDrawPlugin(Star):
 
     async def get_usage_stats_handler(self):
         self._refresh_from_native_config_if_changed()
-        return jsonify({"success": True, "stats": self._usage_stats_for_page()})
+        stats = await asyncio.to_thread(self._usage_stats_for_page)
+        return jsonify({"success": True, "stats": stats})
 
     async def get_cache_stats_handler(self):
         self._refresh_from_native_config_if_changed()
-        return jsonify({"success": True, "stats": self._cache_stats_for_page()})
+        stats = await asyncio.to_thread(self._cache_stats_for_page)
+        return jsonify({"success": True, "stats": stats})
 
     def _config_for_page(self) -> Dict[str, Any]:
         self._page_image_tokens.clear()
@@ -743,10 +752,11 @@ class OmniDrawPlugin(Star):
             return jsonify({"success": False, "message": "配置格式错误：请求体必须是 JSON 对象。"}), 400
 
         try:
-            self._normalize_saved_page_images(new_config)
-            self._apply_runtime_config(new_config)
-            self._persist_config()
-            self._safe_update_context_config()
+            with self._config_lock:
+                self._normalize_saved_page_images(new_config)
+                self._apply_runtime_config(new_config)
+                self._persist_config()
+                self._safe_update_context_config()
         except Exception as exc:
             logger.error(f"[OmniDraw] 配置保存失败: {exc}", exc_info=True)
             return jsonify({"success": False, "message": f"配置保存失败: {exc}"}), 500
@@ -756,8 +766,9 @@ class OmniDrawPlugin(Star):
 
     async def clear_cache_handler(self):
         self._refresh_from_native_config_if_changed()
-        result = self._clear_cache_images(reason="webui")
-        return jsonify({"success": True, "message": "缓存已清理。", "cleanup": result, "stats": self._cache_stats_for_page()})
+        result = await asyncio.to_thread(lambda: self._clear_cache_images(reason="webui"))
+        stats = await asyncio.to_thread(self._cache_stats_for_page)
+        return jsonify({"success": True, "message": "缓存已清理。", "cleanup": result, "stats": stats})
 
     def _create_background_task(self, coro: Any) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -1098,7 +1109,7 @@ class OmniDrawPlugin(Star):
             chunks.append(chunk)
         return b"".join(chunks)
 
-    async def _process_and_save_images(self, raw_images: Iterable[str]) -> List[str]:
+    async def _process_and_save_images(self, raw_images: Iterable[str], session: Optional[aiohttp.ClientSession] = None) -> List[str]:
         processed_paths = []
         if not raw_images:
             return processed_paths
@@ -1107,21 +1118,28 @@ class OmniDrawPlugin(Star):
         os.makedirs(save_dir, exist_ok=True)
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-        async with aiohttp.ClientSession() as session:
-            for img_ref in raw_images:
+        session_obj = session
+        session_owner = False
+        try:
+            for idx, img_ref in enumerate(raw_images):
                 if not img_ref:
                     continue
                 img_ref = str(img_ref)
 
                 if img_ref.startswith("data:image"):
                     try:
-                        b64_data = img_ref.split(",", 1)[1]
-                        decoded = base64.b64decode(b64_data, validate=False)
+                        decoded, content_type = split_data_url(img_ref)
                         if len(decoded) > MAX_IMAGE_BYTES:
                             raise ValueError("Base64 图片超过大小限制")
-                        file_path = os.path.join(save_dir, f"ref_{uuid.uuid4().hex[:12]}.png")
-                        with open(file_path, "wb") as file:
-                            file.write(decoded)
+                        file_path = await asyncio.to_thread(
+                            save_image_bytes,
+                            decoded,
+                            save_dir,
+                            img_ref,
+                            "ref",
+                            idx,
+                            content_type,
+                        )
                         processed_paths.append(file_path)
                     except (IndexError, ValueError, binascii.Error, OSError) as exc:
                         logger.warning(f"[OmniDraw] Base64 参考图处理失败: {exc}")
@@ -1135,16 +1153,26 @@ class OmniDrawPlugin(Star):
                         logger.warning(f"[OmniDraw] 本地参考图不存在: {abs_path}")
                     continue
 
+                if session_obj is None:
+                    session_obj = aiohttp.ClientSession()
+                    session_owner = True
+
                 for attempt in range(1, 4):
                     try:
-                        async with session.get(img_ref, headers=headers, timeout=15) as response:
+                        async with session_obj.get(img_ref, headers=headers, timeout=15) as response:
                             if response.status != 200:
                                 logger.warning(f"[OmniDraw] 下载参考图失败，状态码 {response.status}: {img_ref}")
                                 continue
                             img_data = await self._read_response_limited(response)
-                            file_path = os.path.join(save_dir, f"ref_{uuid.uuid4().hex[:12]}.png")
-                            with open(file_path, "wb") as file:
-                                file.write(img_data)
+                            file_path = await asyncio.to_thread(
+                                save_image_bytes,
+                                img_data,
+                                save_dir,
+                                img_ref,
+                                "ref",
+                                idx,
+                                response.headers.get("Content-Type", ""),
+                            )
                             processed_paths.append(file_path)
                             break
                     except Exception as exc:
@@ -1153,7 +1181,10 @@ class OmniDrawPlugin(Star):
                         else:
                             await asyncio.sleep(1)
 
-        self._prune_cache_if_needed("user_refs", protected_paths=processed_paths)
+            await asyncio.to_thread(lambda: self._prune_cache_if_needed("user_refs", protected_paths=processed_paths))
+        finally:
+            if session_owner:
+                await session_obj.close()
         return processed_paths
 
     def _normalize_count(self, count: Any) -> int:
@@ -1391,25 +1422,26 @@ class OmniDrawPlugin(Star):
         if count <= 0:
             return
 
-        stats = self._current_usage_stats()
-        status = self._access_status(event, refresh=False)
-        user_id = status.get("user_id") or self._get_event_user_id(event)
-        users = stats.setdefault("users", {})
-        record = users.setdefault(user_id, {"user_id": user_id, "count": 0, "last_at": 0, "bonus": 0, "checkin_at": 0})
-        record["user_id"] = user_id
-        record["count"] = self._to_nonnegative_int(record.get("count", 0)) + count
-        record["bonus"] = self._to_nonnegative_int(record.get("bonus", 0))
-        record["checkin_at"] = self._to_nonnegative_int(record.get("checkin_at", 0))
-        record["last_at"] = int(time.time())
-        record["access_level"] = str(status.get("level") or "limited")
-        group_id = status.get("group_id") or self._get_event_group_id(event)
-        if group_id:
-            record["group_id"] = group_id
-        display_name = self._get_event_user_label(event).strip()
-        if display_name and display_name != user_id:
-            record["display_name"] = display_name
-        stats["total"] = sum(self._to_nonnegative_int(item.get("count", 0)) for item in users.values())
-        self._persist_usage_stats()
+        with self._usage_lock:
+            stats = self._current_usage_stats()
+            status = self._access_status(event, refresh=False)
+            user_id = status.get("user_id") or self._get_event_user_id(event)
+            users = stats.setdefault("users", {})
+            record = users.setdefault(user_id, {"user_id": user_id, "count": 0, "last_at": 0, "bonus": 0, "checkin_at": 0})
+            record["user_id"] = user_id
+            record["count"] = self._to_nonnegative_int(record.get("count", 0)) + count
+            record["bonus"] = self._to_nonnegative_int(record.get("bonus", 0))
+            record["checkin_at"] = self._to_nonnegative_int(record.get("checkin_at", 0))
+            record["last_at"] = int(time.time())
+            record["access_level"] = str(status.get("level") or "limited")
+            group_id = status.get("group_id") or self._get_event_group_id(event)
+            if group_id:
+                record["group_id"] = group_id
+            display_name = self._get_event_user_label(event).strip()
+            if display_name and display_name != user_id:
+                record["display_name"] = display_name
+            stats["total"] = sum(self._to_nonnegative_int(item.get("count", 0)) for item in users.values())
+            self._persist_usage_stats()
 
     def _has_permission(self, event: AstrMessageEvent) -> bool:
         return bool(self._access_status(event).get("allowed", True))
@@ -1435,12 +1467,9 @@ class OmniDrawPlugin(Star):
 
     def _create_image_component(self, image_url: str) -> Image:
         if image_url.startswith("data:image"):
-            b64_data = image_url.split(",", 1)[1]
+            image_bytes, content_type = split_data_url(image_url)
             save_dir = os.path.join(self.data_dir, "temp_images")
-            os.makedirs(save_dir, exist_ok=True)
-            file_path = os.path.join(save_dir, f"img_{uuid.uuid4().hex[:12]}.png")
-            with open(file_path, "wb") as file:
-                file.write(base64.b64decode(b64_data, validate=False))
+            file_path = save_image_bytes(image_bytes, save_dir, image_url, "img", 0, content_type)
             self._prune_cache_if_needed("temp_images", protected_paths=[file_path])
             return Image.fromFileSystem(file_path)
         if image_url.startswith("http"):
@@ -1594,7 +1623,7 @@ class OmniDrawPlugin(Star):
     @filter.command("清理缓存")
     @handle_errors
     async def cmd_clear_cache(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        result = self._clear_cache_images(reason="command")
+        result = await asyncio.to_thread(lambda: self._clear_cache_images(reason="command"))
         yield event.plain_result(
             f"{MessageEmoji.SUCCESS} 缓存清理完成：删除 {result['deleted_count']} 个图片文件，"
             f"释放 {result['human_deleted_size']}。\n"
@@ -1618,43 +1647,45 @@ class OmniDrawPlugin(Star):
             yield event.plain_result(f"{MessageEmoji.INFO} 当前未启用签到领额度。")
             return
 
-        stats = self._current_usage_stats()
-        users = stats.setdefault("users", {})
-        user_id = status.get("user_id") or self._get_event_user_id(event)
-        record = users.setdefault(user_id, {"user_id": user_id, "count": 0, "last_at": 0, "bonus": 0, "checkin_at": 0})
-        used = self._to_nonnegative_int(record.get("count", 0))
-        bonus = self._to_nonnegative_int(record.get("bonus", 0))
-        checkin_at = self._to_nonnegative_int(record.get("checkin_at", 0))
-        base_limit = self._daily_image_limit()
-        if checkin_at > 0:
-            yield event.plain_result(
-                f"{MessageEmoji.INFO} 今日已经签到过啦：额外额度 +{bonus} 张，"
-                f"当前已使用 {used}/{base_limit + bonus} 张。"
-            )
-            return
-
-        bonus_min = self._to_nonnegative_int(getattr(self.plugin_config, "checkin_bonus_min", 1), 1)
-        bonus_max = self._to_nonnegative_int(getattr(self.plugin_config, "checkin_bonus_max", 3), 3)
-        if bonus_max < bonus_min:
-            bonus_max = bonus_min
-        gained = random.randint(bonus_min, bonus_max) if bonus_max > bonus_min else bonus_min
-        record["user_id"] = user_id
-        record["count"] = used
-        record["bonus"] = bonus + gained
-        record["checkin_at"] = int(time.time())
-        record["access_level"] = "limited"
-        group_id = status.get("group_id") or self._get_event_group_id(event)
-        if group_id:
-            record["group_id"] = group_id
-        display_name = self._get_event_user_label(event).strip()
-        if display_name and display_name != user_id:
-            record["display_name"] = display_name
-        stats["total"] = sum(self._to_nonnegative_int(item.get("count", 0)) for item in users.values())
-        self._persist_usage_stats()
-        yield event.plain_result(
-            f"{MessageEmoji.SUCCESS} 签到成功，今日额外生图额度 +{gained} 张。"
-            f"当前额度 {used}/{base_limit + bonus + gained} 张。"
-        )
+        reply = ""
+        with self._usage_lock:
+            stats = self._current_usage_stats()
+            users = stats.setdefault("users", {})
+            user_id = status.get("user_id") or self._get_event_user_id(event)
+            record = users.setdefault(user_id, {"user_id": user_id, "count": 0, "last_at": 0, "bonus": 0, "checkin_at": 0})
+            used = self._to_nonnegative_int(record.get("count", 0))
+            bonus = self._to_nonnegative_int(record.get("bonus", 0))
+            checkin_at = self._to_nonnegative_int(record.get("checkin_at", 0))
+            base_limit = self._daily_image_limit()
+            if checkin_at > 0:
+                reply = (
+                    f"{MessageEmoji.INFO} 今日已经签到过啦：额外额度 +{bonus} 张，"
+                    f"当前已使用 {used}/{base_limit + bonus} 张。"
+                )
+            else:
+                bonus_min = self._to_nonnegative_int(getattr(self.plugin_config, "checkin_bonus_min", 1), 1)
+                bonus_max = self._to_nonnegative_int(getattr(self.plugin_config, "checkin_bonus_max", 3), 3)
+                if bonus_max < bonus_min:
+                    bonus_max = bonus_min
+                gained = random.randint(bonus_min, bonus_max) if bonus_max > bonus_min else bonus_min
+                record["user_id"] = user_id
+                record["count"] = used
+                record["bonus"] = bonus + gained
+                record["checkin_at"] = int(time.time())
+                record["access_level"] = "limited"
+                group_id = status.get("group_id") or self._get_event_group_id(event)
+                if group_id:
+                    record["group_id"] = group_id
+                display_name = self._get_event_user_label(event).strip()
+                if display_name and display_name != user_id:
+                    record["display_name"] = display_name
+                stats["total"] = sum(self._to_nonnegative_int(item.get("count", 0)) for item in users.values())
+                self._persist_usage_stats()
+                reply = (
+                    f"{MessageEmoji.SUCCESS} 签到成功，今日额外生图额度 +{gained} 张。"
+                    f"当前额度 {used}/{base_limit + bonus + gained} 张。"
+                )
+        yield event.plain_result(reply)
 
     @filter.command("人设")
     @handle_errors
@@ -1819,25 +1850,25 @@ class OmniDrawPlugin(Star):
             yield event.plain_result(quota_error)
             return
 
-        raw_refs = self._get_event_images(event)
-        preset_prompt = self.plugin_config.presets[cmd_name]
-        safe_refs = await self._process_and_save_images(raw_refs)
-
-        msg = self._format_pending_message(
-            self.plugin_config.draw_pending_message,
-            DEFAULT_DRAW_PENDING_MESSAGE,
-            command=cmd_name,
-            prompt=preset_prompt,
-            ref_count=len(safe_refs),
-            param_count=0,
-            persona_name=self.plugin_config.persona_name,
-        )
-        if self.plugin_config.verbose_report:
-            msg += f"\n📝 宏对应提示词: {preset_prompt}\n🖼️ 实际参考图：{len(safe_refs)} 张"
-        yield event.plain_result(msg)
-
         try:
             async with aiohttp.ClientSession() as session:
+                raw_refs = self._get_event_images(event)
+                preset_prompt = self.plugin_config.presets[cmd_name]
+                safe_refs = await self._process_and_save_images(raw_refs, session=session)
+
+                msg = self._format_pending_message(
+                    self.plugin_config.draw_pending_message,
+                    DEFAULT_DRAW_PENDING_MESSAGE,
+                    command=cmd_name,
+                    prompt=preset_prompt,
+                    ref_count=len(safe_refs),
+                    param_count=0,
+                    persona_name=self.plugin_config.persona_name,
+                )
+                if self.plugin_config.verbose_report:
+                    msg += f"\n📝 宏对应提示词: {preset_prompt}\n🖼️ 实际参考图：{len(safe_refs)} 张"
+                yield event.plain_result(msg)
+
                 chain_manager = ChainManager(self.plugin_config, session)
                 image_url = await chain_manager.run_chain("text2img", preset_prompt, user_refs=safe_refs)
             self._record_generated_images(event, 1)
@@ -1879,28 +1910,28 @@ class OmniDrawPlugin(Star):
             yield event.plain_result(f"{MessageEmoji.WARNING} 请输入提示词或附带参考图。")
             return
 
-        safe_refs = await self._process_and_save_images(raw_refs)
-        prompt, kwargs = self.cmd_parser.parse(message)
-        if not prompt and safe_refs:
-            prompt = "根据参考图生成一张自然、清晰、符合原图语义的图片。"
-        param_count = len(kwargs)
-        if safe_refs:
-            kwargs["user_refs"] = safe_refs
-
-        msg = self._format_pending_message(
-            self.plugin_config.draw_pending_message,
-            DEFAULT_DRAW_PENDING_MESSAGE,
-            command="画",
-            prompt=prompt,
-            ref_count=len(safe_refs),
-            param_count=param_count,
-            persona_name=self.plugin_config.persona_name,
-        )
-        if self.plugin_config.verbose_report:
-            msg += f"\n📝 最终提示词: {prompt}\n⚙️ 附加参数：{param_count} 个\n🖼️ 实际参考图：{len(safe_refs)} 张"
-        yield event.plain_result(msg)
-
         async with aiohttp.ClientSession() as session:
+            safe_refs = await self._process_and_save_images(raw_refs, session=session)
+            prompt, kwargs = self.cmd_parser.parse(message)
+            if not prompt and safe_refs:
+                prompt = "根据参考图生成一张自然、清晰、符合原图语义的图片。"
+            param_count = len(kwargs)
+            if safe_refs:
+                kwargs["user_refs"] = safe_refs
+
+            msg = self._format_pending_message(
+                self.plugin_config.draw_pending_message,
+                DEFAULT_DRAW_PENDING_MESSAGE,
+                command="画",
+                prompt=prompt,
+                ref_count=len(safe_refs),
+                param_count=param_count,
+                persona_name=self.plugin_config.persona_name,
+            )
+            if self.plugin_config.verbose_report:
+                msg += f"\n📝 最终提示词: {prompt}\n⚙️ 附加参数：{param_count} 个\n🖼️ 实际参考图：{len(safe_refs)} 张"
+            yield event.plain_result(msg)
+
             chain_manager = ChainManager(self.plugin_config, session)
             image_url = await chain_manager.run_chain("text2img", prompt, **kwargs)
         self._record_generated_images(event, 1)
@@ -1936,34 +1967,34 @@ class OmniDrawPlugin(Star):
         user_input, kwargs = self.cmd_parser.parse(message)
         user_input = user_input or "看着镜头微笑"
 
-        optimized_actions = await self.prompt_optimizer.optimize(user_input, count=1)
-        final_prompt, extra_kwargs = self.persona_manager.build_persona_prompt(optimized_actions[0] if optimized_actions else user_input)
-        extra_kwargs.update(kwargs)
-
-        raw_refs = self._get_event_images(event)
-        target_refs = raw_refs if raw_refs else self.plugin_config.persona_ref_images
-        safe_refs = await self._process_and_save_images(target_refs)
-        if safe_refs:
-            extra_kwargs["user_refs"] = safe_refs
-            if not raw_refs:
-                extra_kwargs.pop("persona_ref", None)
-
-        msg = self._format_pending_message(
-            self.plugin_config.selfie_pending_message,
-            DEFAULT_SELFIE_PENDING_MESSAGE,
-            command="自拍",
-            prompt=final_prompt,
-            user_input=user_input,
-            ref_count=len(safe_refs),
-            param_count=len(kwargs),
-            persona_name=self.plugin_config.persona_name,
-        )
-        if self.plugin_config.verbose_report:
-            msg += f"\n📝 构建提示词: {final_prompt}\n⚙️ 附加参数：{len(kwargs)} 个\n🖼️ 实际参考图：{len(safe_refs)} 张"
-        yield event.plain_result(msg)
-
-        chain_to_use = "selfie" if self.plugin_config.chains.get("selfie") else "text2img"
         async with aiohttp.ClientSession() as session:
+            optimized_actions = await self.prompt_optimizer.optimize(user_input, count=1, session=session)
+            final_prompt, extra_kwargs = self.persona_manager.build_persona_prompt(optimized_actions[0] if optimized_actions else user_input)
+            extra_kwargs.update(kwargs)
+
+            raw_refs = self._get_event_images(event)
+            target_refs = raw_refs if raw_refs else self.plugin_config.persona_ref_images
+            safe_refs = await self._process_and_save_images(target_refs, session=session)
+            if safe_refs:
+                extra_kwargs["user_refs"] = safe_refs
+                if not raw_refs:
+                    extra_kwargs.pop("persona_ref", None)
+
+            msg = self._format_pending_message(
+                self.plugin_config.selfie_pending_message,
+                DEFAULT_SELFIE_PENDING_MESSAGE,
+                command="自拍",
+                prompt=final_prompt,
+                user_input=user_input,
+                ref_count=len(safe_refs),
+                param_count=len(kwargs),
+                persona_name=self.plugin_config.persona_name,
+            )
+            if self.plugin_config.verbose_report:
+                msg += f"\n📝 构建提示词: {final_prompt}\n⚙️ 附加参数：{len(kwargs)} 个\n🖼️ 实际参考图：{len(safe_refs)} 张"
+            yield event.plain_result(msg)
+
+            chain_to_use = "selfie" if self.plugin_config.chains.get("selfie") else "text2img"
             chain_manager = ChainManager(self.plugin_config, session)
             image_url = await chain_manager.run_chain(chain_to_use, final_prompt, **extra_kwargs)
         self._record_generated_images(event, 1)
@@ -1997,7 +2028,14 @@ class OmniDrawPlugin(Star):
             yield event.plain_result(f"{MessageEmoji.WARNING} 请输入视频提示词或附带参考图。")
             return
 
-        safe_refs = await self._process_and_save_images(raw_refs)
+        safe_refs = []
+        if raw_refs:
+            needs_session = any(str(ref).startswith("http") for ref in raw_refs)
+            if needs_session:
+                async with aiohttp.ClientSession() as session:
+                    safe_refs = await self._process_and_save_images(raw_refs, session=session)
+            else:
+                safe_refs = await self._process_and_save_images(raw_refs)
         prompt, kwargs = self.cmd_parser.parse(message)
         if not prompt and safe_refs:
             prompt = "根据参考图生成一段自然、流畅、清晰的视频。"
@@ -2037,14 +2075,14 @@ class OmniDrawPlugin(Star):
             quota_error = self._image_quota_error_message(event, count)
             if quota_error:
                 return quota_error
-            optimized_actions = await self.prompt_optimizer.optimize(action or "看着镜头微笑", count)
-            raw_refs = self._get_event_images(event)
-            target_refs = raw_refs if raw_refs else self.plugin_config.persona_ref_images
-            safe_refs = await self._process_and_save_images(target_refs)
-            extra_param_kwargs = self._parse_extra_params(extra_params)
-
-            chain_to_use = "selfie" if self.plugin_config.chains.get("selfie") else "text2img"
             async with aiohttp.ClientSession() as session:
+                optimized_actions = await self.prompt_optimizer.optimize(action or "看着镜头微笑", count, session=session)
+                raw_refs = self._get_event_images(event)
+                target_refs = raw_refs if raw_refs else self.plugin_config.persona_ref_images
+                safe_refs = await self._process_and_save_images(target_refs, session=session)
+                extra_param_kwargs = self._parse_extra_params(extra_params)
+
+                chain_to_use = "selfie" if self.plugin_config.chains.get("selfie") else "text2img"
                 chain_manager = ChainManager(self.plugin_config, session)
                 tasks = []
                 for optimized_action in optimized_actions:
@@ -2099,17 +2137,17 @@ class OmniDrawPlugin(Star):
             quota_error = self._image_quota_error_message(event, count)
             if quota_error:
                 return quota_error
-            optimized_actions = await self.prompt_optimizer.optimize(prompt, count)
-            safe_refs = await self._process_and_save_images(self._get_event_images(event))
-
-            kwargs = {"user_refs": safe_refs} if safe_refs else {}
-            if aspect_ratio:
-                kwargs["aspect_ratio"] = aspect_ratio
-            if size:
-                kwargs["size"] = size
-            kwargs.update(self._parse_extra_params(extra_params))
-
             async with aiohttp.ClientSession() as session:
+                optimized_actions = await self.prompt_optimizer.optimize(prompt, count, session=session)
+                safe_refs = await self._process_and_save_images(self._get_event_images(event), session=session)
+
+                kwargs = {"user_refs": safe_refs} if safe_refs else {}
+                if aspect_ratio:
+                    kwargs["aspect_ratio"] = aspect_ratio
+                if size:
+                    kwargs["size"] = size
+                kwargs.update(self._parse_extra_params(extra_params))
+
                 chain_manager = ChainManager(self.plugin_config, session)
                 tasks = [chain_manager.run_chain("text2img", optimized_action, **kwargs) for optimized_action in optimized_actions]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -2149,7 +2187,15 @@ class OmniDrawPlugin(Star):
 
         try:
             count = self._normalize_count(count)
-            safe_refs = await self._process_and_save_images(self._get_event_images(event))
+            raw_refs = self._get_event_images(event)
+            safe_refs = []
+            if raw_refs:
+                needs_session = any(str(ref).startswith("http") for ref in raw_refs)
+                if needs_session:
+                    async with aiohttp.ClientSession() as session:
+                        safe_refs = await self._process_and_save_images(raw_refs, session=session)
+                else:
+                    safe_refs = await self._process_and_save_images(raw_refs)
             kwargs = self._parse_extra_params(extra_params)
             if aspect_ratio:
                 kwargs["aspect_ratio"] = aspect_ratio

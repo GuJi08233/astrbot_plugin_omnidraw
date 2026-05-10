@@ -34,7 +34,7 @@ const mockConfig = {
     },
     optimizer_config: {
         enable_optimizer: true,
-        optimizer_style: "自拍专用极致真实",
+        optimizer_style: "手机日常原生感",
         chain_optimizer: "node_1",
         optimizer_model: "gpt-4o-mini",
         optimizer_timeout: 15,
@@ -111,6 +111,7 @@ let state = {
 
 let initialized = false;
 let savedSnapshot = "";
+let dirtyState = false;
 
 function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -435,7 +436,8 @@ function showToast(message, type = "success") {
 
 function setDirty(force) {
     if (!initialized) return;
-    const isDirty = typeof force === "boolean" ? force : JSON.stringify(buildPayload()) !== savedSnapshot;
+    dirtyState = typeof force === "boolean" ? force : true;
+    const isDirty = dirtyState;
     document.body.classList.toggle("is-dirty", isDirty);
     const saveState = byId("save-state");
     if (saveState) saveState.textContent = isDirty ? "有未保存更改" : "配置已同步";

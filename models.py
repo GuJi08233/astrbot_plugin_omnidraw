@@ -1,11 +1,9 @@
 """
 AstrBot 万象画卷插件 - 数据模型与配置归一化。
 """
-import base64
 import binascii
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -15,6 +13,7 @@ from .constants import (
     DEFAULT_SELFIE_ERROR_MESSAGE,
     DEFAULT_SELFIE_PENDING_MESSAGE,
 )
+from .utils import save_image_bytes, split_data_url
 
 PLUGIN_NAME = "astrbot_plugin_omnidraw"
 PLUGIN_AUTHOR = "雪碧bir"
@@ -561,17 +560,8 @@ def _is_page_preview_ref(image_ref: str) -> bool:
 
 def _save_data_url_image(data_url: str, refs_dir: str, idx: int) -> str:
     try:
-        header, base64_str = data_url.split(",", 1)
-        ext = "png"
-        if "jpeg" in header or "jpg" in header:
-            ext = "jpg"
-        elif "webp" in header:
-            ext = "webp"
-        filename = f"ref_{int(time.time() * 1000)}_{idx}.{ext}"
-        filepath = os.path.join(refs_dir, filename)
-        with open(filepath, "wb") as file:
-            file.write(base64.b64decode(base64_str, validate=False))
-        return filepath
+        image_bytes, content_type = split_data_url(data_url)
+        return save_image_bytes(image_bytes, refs_dir, data_url, "ref", idx, content_type)
     except (ValueError, binascii.Error, OSError):
         return ""
 
