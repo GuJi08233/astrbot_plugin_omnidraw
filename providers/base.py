@@ -259,11 +259,11 @@ def summarize_text_for_log(value: str, max_string_length: int = 160, key_hint: s
     key_lowered = key_hint.lower()
     if lowered.startswith("data:image"):
         return _image_data_url_summary(stripped)
-    if any(marker in key_lowered for marker in IMAGE_LOG_KEY_MARKERS) and _looks_like_base64_blob(stripped):
-        return f"<image_base64 chars={len(stripped)}>"
     if _is_prompt_log_key(key_lowered):
         label = "prompt" if "prompt" in key_lowered else key_lowered or "text"
         return f"<{label} chars={len(text)}>"
+    if _looks_like_base64_blob(stripped):
+        return f"<image_base64 chars={len(stripped)}>"
     redacted_text = _redact_text_fragments_for_log(text)
     if len(redacted_text) <= max_string_length:
         return redacted_text
