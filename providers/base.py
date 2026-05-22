@@ -185,6 +185,37 @@ def extract_error_message(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def summarize_payload_for_log(payload: Any, max_string_length: int = 160) -> Any:
+    """Build a compact, secret-safe payload summary for logs."""
+    if isinstance(payload, dict):
+        summary: Dict[str, Any] = {}
+        for key, value in payload.items():
+            key_text = str(key)
+            if any(marker in key_text.lower() for marker in ("key", "token", "secret", "authorization", "password")):
+                summary[key_text] = "<redacted>"
+            else:
+                summary[key_text] = summarize_payload_for_log(value, max_string_length)
+        return summary
+    if isinstance(payload, list):
+        return [summarize_payload_for_log(item, max_string_length) for item in payload]
+    if isinstance(payload, tuple):
+        return [summarize_payload_for_log(item, max_string_length) for item in payload]
+    if not isinstance(payload, str):
+        return payload
+
+    text = payload.strip()
+    if text.startswith("data:image"):
+        header = text.split(",", 1)[0]
+        return f"<image_data_url header={header} chars={len(text)}>"
+    if len(text) <= max_string_length:
+        return payload
+    return f"{text[:max_string_length]}...<truncated chars={len(text)}>"
+
+
+def summarize_payload_json_for_log(payload: Any) -> str:
+    return json.dumps(summarize_payload_for_log(payload), ensure_ascii=False)
+
+
 def extract_image_url_from_response(payload: Any, base_url: str) -> str:
     """Extract an image URL or data URL from common image/chat/responses shapes."""
 

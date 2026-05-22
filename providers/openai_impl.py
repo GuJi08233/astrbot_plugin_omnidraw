@@ -1,6 +1,5 @@
 import aiohttp
 import base64
-import json
 from typing import Any
 
 from astrbot.api import logger
@@ -12,6 +11,7 @@ from .base import (
     extract_error_message,
     extract_image_url_from_response,
     guess_image_content_type,
+    summarize_payload_json_for_log,
 )
 
 class OpenAIProvider(BaseProvider):
@@ -77,7 +77,7 @@ class OpenAIProvider(BaseProvider):
                     payload["image" if idx == 1 else f"image{idx}"] = image_value
                 payload.update(api_kwargs)
                 log_payload = {k: v for k, v in payload.items() if not str(k).startswith("image")}
-                logger.info(f"📤 [标准通道] 附带高级参数的请求体:\n{json.dumps(log_payload, ensure_ascii=False)}")
+                logger.info(f"📤 [标准通道] 附带高级参数的请求体摘要: {summarize_payload_json_for_log(log_payload)}")
                 headers = {"Content-Type": "application/json", "Authorization": "Bearer " + current_key}
                 timeout_obj = aiohttp.ClientTimeout(total=self.config.timeout)
                 async with self.session.post(url, json=payload, headers=headers, timeout=timeout_obj) as response:
@@ -123,7 +123,7 @@ class OpenAIProvider(BaseProvider):
             # 暴力将所有高级参数塞入 JSON 的最外层，中转 API 会直接识别并调用底层
             payload.update(api_kwargs)
 
-            logger.info(f"📤 [标准通道] 附带高级参数的请求体:\n{json.dumps(payload, ensure_ascii=False)}")
+            logger.info(f"📤 [标准通道] 附带高级参数的请求体摘要: {summarize_payload_json_for_log(payload)}")
 
             headers = {"Content-Type": "application/json", "Authorization": "Bearer " + current_key}
 

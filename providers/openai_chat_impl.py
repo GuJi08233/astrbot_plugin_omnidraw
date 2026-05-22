@@ -3,7 +3,6 @@ AstrBot 万象画卷插件 v3.1 - OpenAI Chat 兼容实现
 功能：支持高阶多模态参数动态透传 (兼容 Midjourney/Gemini 等走 Chat 通道的代理节点)
 """
 import aiohttp
-import json
 import base64
 from typing import Any
 from astrbot.api import logger
@@ -14,6 +13,7 @@ from .base import (
     extract_error_message,
     extract_image_url_from_response,
     guess_image_content_type,
+    summarize_payload_json_for_log,
 )
 
 class OpenAIChatProvider(BaseProvider):
@@ -102,7 +102,7 @@ class OpenAIChatProvider(BaseProvider):
         
         if api_kwargs:
             payload.update(api_kwargs)
-            logger.info(f"📤 [Chat/Vision通道] 触发高级参数透传:\n{json.dumps(api_kwargs, ensure_ascii=False)}")
+            logger.info(f"📤 [Chat/Vision通道] 触发高级参数透传摘要: {summarize_payload_json_for_log(api_kwargs)}")
 
         headers = {
             "Content-Type": "application/json",

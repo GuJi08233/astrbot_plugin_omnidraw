@@ -15,6 +15,7 @@ from .base import (
     extract_image_url_from_response,
     guess_image_content_type,
     is_complete_endpoint_url,
+    summarize_payload_json_for_log,
 )
 
 
@@ -64,20 +65,6 @@ class CustomEndpointProvider(BaseProvider):
 
     def _endpoint_path(self, endpoint: str) -> str:
         return urlparse(endpoint).path.rstrip("/").lower()
-
-    def _redact_for_log(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        redacted: Dict[str, Any] = {}
-        for key, value in payload.items():
-            if key == "image" or key.startswith("image") or key in {"reference_images"}:
-                if isinstance(value, list):
-                    redacted[key] = [f"<image:{idx + 1}>" for idx, _ in enumerate(value)]
-                elif value:
-                    redacted[key] = "<image>"
-                else:
-                    redacted[key] = value
-            else:
-                redacted[key] = value
-        return redacted
 
     def _build_chat_payload(self, prompt: str, encoded_images: List[str], api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
         content: List[Dict[str, Any]] = []
@@ -129,7 +116,7 @@ class CustomEndpointProvider(BaseProvider):
     async def _post_json(self, endpoint: str, headers: Dict[str, str], payload: Dict[str, Any]) -> str:
         timeout_obj = aiohttp.ClientTimeout(total=self.config.timeout)
         logger.info(f"📤 [自定义通道] 请求完整路径: {endpoint}")
-        logger.info(f"📤 [自定义通道] 请求体:\n{json.dumps(self._redact_for_log(payload), ensure_ascii=False)}")
+        logger.info(f"📤 [自定义通道] 请求体摘要: {summarize_payload_json_for_log(payload)}")
         async with self.session.post(endpoint, json=payload, headers=headers, timeout=timeout_obj) as response:
             return await self._parse_response(response, endpoint)
 

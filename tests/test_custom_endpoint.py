@@ -35,6 +35,7 @@ from astrbot_plugin_omnidraw_ghfast.models import ProviderConfig, _normalize_api
 from astrbot_plugin_omnidraw_ghfast.providers.base import (
     extract_image_url_from_response,
     is_complete_endpoint_url,
+    summarize_payload_for_log,
 )
 from astrbot_plugin_omnidraw_ghfast.providers.custom_endpoint_impl import CustomEndpointProvider
 
@@ -131,6 +132,32 @@ class CustomEndpointHelpersTest(unittest.TestCase):
             extract_image_url_from_response({"image": "files/from-image-key.webp"}, endpoint),
             "https://api.example.com/files/from-image-key.webp",
         )
+
+    def test_payload_log_summary_redacts_nested_data_urls(self):
+        image_data_url = "data:image/jpeg;base64," + _long_b64()
+        payload = {
+            "model": "gpt-image-2",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                        {"type": "text", "text": "x" * 220},
+                    ],
+                }
+            ],
+            "api_key": "sk-test-should-not-log",
+        }
+
+        summary = summarize_payload_for_log(payload)
+
+        image_summary = summary["messages"][0]["content"][0]["image_url"]["url"]
+        text_summary = summary["messages"][0]["content"][1]["text"]
+        self.assertIn("<image_data_url", image_summary)
+        self.assertIn("chars=", image_summary)
+        self.assertNotIn(_long_b64()[:40], str(summary))
+        self.assertIn("<truncated chars=220>", text_summary)
+        self.assertEqual(summary["api_key"], "<redacted>")
 
 
 class CustomEndpointProviderTest(unittest.IsolatedAsyncioTestCase):
