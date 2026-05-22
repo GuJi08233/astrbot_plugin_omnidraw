@@ -16,6 +16,8 @@ from .base import (
     guess_image_content_type,
     is_complete_endpoint_url,
     summarize_payload_json_for_log,
+    summarize_response_text_for_log,
+    summarize_text_for_log,
 )
 
 
@@ -154,7 +156,7 @@ class CustomEndpointProvider(BaseProvider):
     async def _parse_response(self, response: aiohttp.ClientResponse, endpoint: str) -> str:
         text = await response.text()
         if response.status >= 400:
-            logger.error("💥 自定义通道 API 返回错误:\n" + text)
+            logger.error("💥 自定义通道 API 返回错误摘要: " + summarize_response_text_for_log(text, max_string_length=500))
             raise RuntimeError(f"HTTP {response.status}: {extract_error_message(text)}")
 
         try:
@@ -165,7 +167,11 @@ class CustomEndpointProvider(BaseProvider):
         image_url = extract_image_url_from_response(payload, endpoint)
         if image_url:
             return image_url
-        raise ValueError("自定义接口返回结构异常，未找到图片数据: " + str(payload))
+        if isinstance(payload, (dict, list, tuple)):
+            payload_summary = summarize_payload_json_for_log(payload, max_string_length=500)
+        else:
+            payload_summary = summarize_text_for_log(str(payload), max_string_length=500)
+        raise ValueError("自定义接口返回结构异常，未找到图片数据: " + payload_summary)
 
     async def generate_image(self, prompt: str, **kwargs: Any) -> str:
         current_key = self.get_current_key()
@@ -181,7 +187,7 @@ class CustomEndpointProvider(BaseProvider):
         api_kwargs = {key: value for key, value in kwargs.items() if key not in internal_keys}
         headers = {"Authorization": "Bearer " + current_key}
 
-        logger.info(f"📝 [自定义通道] 最终发送给 API 的核心提示词:\n{prompt}")
+        logger.info(f"📝 [自定义通道] 最终提示词摘要: {summarize_text_for_log(prompt)}")
 
         if endpoint_path.endswith("/images/edits") and not ref_images:
             raise ValueError("自定义 /images/edits 完整路径需要至少一张参考图。")

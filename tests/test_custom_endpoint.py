@@ -1,4 +1,5 @@
 import base64
+import importlib
 import json
 import sys
 import types
@@ -6,7 +7,9 @@ import unittest
 from pathlib import Path
 
 
-PACKAGE_PARENT = Path(__file__).resolve().parents[2]
+PLUGIN_DIR = Path(__file__).resolve().parents[1]
+PACKAGE_NAME = PLUGIN_DIR.name
+PACKAGE_PARENT = PLUGIN_DIR.parent
 sys.path.insert(0, str(PACKAGE_PARENT))
 
 astrbot_module = types.ModuleType("astrbot")
@@ -15,29 +18,42 @@ astrbot_event_module = types.ModuleType("astrbot.api.event")
 
 
 class _Logger:
+    def __init__(self):
+        self.messages = []
+
     def info(self, *args, **kwargs):
-        pass
+        self.messages.append(("info", " ".join(str(arg) for arg in args)))
 
     def warning(self, *args, **kwargs):
-        pass
+        self.messages.append(("warning", " ".join(str(arg) for arg in args)))
 
     def error(self, *args, **kwargs):
-        pass
+        self.messages.append(("error", " ".join(str(arg) for arg in args)))
 
 
-astrbot_api_module.logger = _Logger()
+fake_logger = _Logger()
+astrbot_api_module.logger = fake_logger
 astrbot_event_module.AstrMessageEvent = object
 sys.modules.setdefault("astrbot", astrbot_module)
 sys.modules.setdefault("astrbot.api", astrbot_api_module)
 sys.modules.setdefault("astrbot.api.event", astrbot_event_module)
 
-from astrbot_plugin_omnidraw_ghfast.models import ProviderConfig, _normalize_api_type
-from astrbot_plugin_omnidraw_ghfast.providers.base import (
-    extract_image_url_from_response,
-    is_complete_endpoint_url,
-    summarize_payload_for_log,
-)
-from astrbot_plugin_omnidraw_ghfast.providers.custom_endpoint_impl import CustomEndpointProvider
+models_module = importlib.import_module(f"{PACKAGE_NAME}.models")
+base_module = importlib.import_module(f"{PACKAGE_NAME}.providers.base")
+custom_endpoint_module = importlib.import_module(f"{PACKAGE_NAME}.providers.custom_endpoint_impl")
+openai_impl_module = importlib.import_module(f"{PACKAGE_NAME}.providers.openai_impl")
+openai_chat_module = importlib.import_module(f"{PACKAGE_NAME}.providers.openai_chat_impl")
+
+ProviderConfig = models_module.ProviderConfig
+_normalize_api_type = models_module._normalize_api_type
+extract_error_message = base_module.extract_error_message
+extract_image_url_from_response = base_module.extract_image_url_from_response
+is_complete_endpoint_url = base_module.is_complete_endpoint_url
+summarize_payload_for_log = base_module.summarize_payload_for_log
+summarize_text_for_log = base_module.summarize_text_for_log
+CustomEndpointProvider = custom_endpoint_module.CustomEndpointProvider
+OpenAIProvider = openai_impl_module.OpenAIProvider
+OpenAIChatProvider = openai_chat_module.OpenAIChatProvider
 
 
 def _long_b64() -> str:
@@ -50,7 +66,12 @@ class FakeResponse:
         self.status = status
 
     async def text(self):
-        return json.dumps(self.payload)
+        return self.payload if isinstance(self.payload, str) else json.dumps(self.payload)
+
+    async def json(self):
+        if isinstance(self.payload, str):
+            return json.loads(self.payload)
+        return self.payload
 
 
 class FakePost:
@@ -135,6 +156,8 @@ class CustomEndpointHelpersTest(unittest.TestCase):
 
     def test_payload_log_summary_redacts_nested_data_urls(self):
         image_data_url = "data:image/jpeg;base64," + _long_b64()
+        upper_image_data_url = "DATA:Image/PNG;base64," + _long_b64()
+        raw_image = base64.b64encode(b"raw-image" * 40).decode("ascii")
         payload = {
             "model": "gpt-image-2",
             "messages": [
@@ -142,36 +165,86 @@ class CustomEndpointHelpersTest(unittest.TestCase):
                     "role": "user",
                     "content": [
                         {"type": "image_url", "image_url": {"url": image_data_url}},
+                        {"type": "image_url", "image_url": {"url": upper_image_data_url}},
                         {"type": "text", "text": "x" * 220},
                     ],
                 }
             ],
+            "b64_json": raw_image,
+            "image": raw_image,
             "api_key": "sk-test-should-not-log",
         }
 
         summary = summarize_payload_for_log(payload)
 
         image_summary = summary["messages"][0]["content"][0]["image_url"]["url"]
-        text_summary = summary["messages"][0]["content"][1]["text"]
+        upper_image_summary = summary["messages"][0]["content"][1]["image_url"]["url"]
+        text_summary = summary["messages"][0]["content"][2]["text"]
         self.assertIn("<image_data_url", image_summary)
+        self.assertIn("<image_data_url", upper_image_summary)
         self.assertIn("chars=", image_summary)
         self.assertNotIn(_long_b64()[:40], str(summary))
+        self.assertNotIn(raw_image[:40], str(summary))
+        self.assertEqual(summary["b64_json"], f"<image_base64 chars={len(raw_image)}>")
+        self.assertEqual(summary["image"], f"<image_base64 chars={len(raw_image)}>")
         self.assertIn("<truncated chars=220>", text_summary)
         self.assertEqual(summary["api_key"], "<redacted>")
 
+    def test_extract_error_message_sanitizes_echoed_payload(self):
+        raw_image = base64.b64encode(b"raw-image" * 40).decode("ascii")
+        payload = {
+            "error": {
+                "message": {
+                    "api_key": "sk-test-should-not-log",
+                    "image": raw_image,
+                    "text": "x" * 300,
+                }
+            }
+        }
+
+        message = extract_error_message(json.dumps(payload))
+
+        self.assertNotIn("sk-test-should-not-log", message)
+        self.assertNotIn(raw_image[:40], message)
+        self.assertIn("<redacted>", message)
+        self.assertIn("<image_base64", message)
+
+    def test_plain_text_log_summary_redacts_embedded_secrets_and_data_urls(self):
+        image_data_url = "data:image/png;base64," + _long_b64()
+        text = "api_key=sk-plain-secret-should-not-log failed for image " + image_data_url
+
+        summary = summarize_text_for_log(text, max_string_length=500)
+
+        self.assertNotIn("sk-plain-secret-should-not-log", summary)
+        self.assertNotIn(_long_b64()[:40], summary)
+        self.assertIn("api_key=<redacted>", summary)
+        self.assertIn("<image_data_url", summary)
+
 
 class CustomEndpointProviderTest(unittest.IsolatedAsyncioTestCase):
-    def _provider(self, endpoint, response_payload):
+    def setUp(self):
+        fake_logger.messages.clear()
+
+    def _provider(self, endpoint, response_payload, provider_cls=CustomEndpointProvider, status=200):
+        if provider_cls is CustomEndpointProvider:
+            api_type = "custom_endpoint"
+        elif provider_cls is OpenAIChatProvider:
+            api_type = "openai_chat"
+        else:
+            api_type = "openai_image"
         config = ProviderConfig(
             id="custom_node",
-            api_type="custom_endpoint",
+            api_type=api_type,
             base_url=endpoint,
             api_keys=["test-key"],
             model="image-model",
             timeout=30.0,
         )
-        session = FakeSession(FakeResponse(response_payload))
-        return CustomEndpointProvider(config, session), session
+        session = FakeSession(FakeResponse(response_payload, status=status))
+        return provider_cls(config, session), session
+
+    def _log_text(self):
+        return "\n".join(message for _, message in fake_logger.messages)
 
     async def test_posts_exact_image_endpoint(self):
         endpoint = "https://api.example.com/v1/images/generations"
@@ -275,6 +348,116 @@ class CustomEndpointProviderTest(unittest.IsolatedAsyncioTestCase):
             await provider.generate_image("edit a cat", user_refs=["C:/definitely/missing.png"])
 
         self.assertEqual(session.posts, [])
+
+
+    async def test_provider_logs_are_summarized_without_mutating_json_payloads(self):
+        raw_b64 = base64.b64encode(b"provider-raw-image" * 35).decode("ascii")
+        ref_data_url = "data:image/png;base64," + raw_b64
+        secret = "sk-provider-secret-should-not-log"
+        long_prompt = "draw " + ("very detailed " * 30) + "PROMPT_TAIL_SHOULD_NOT_LOG"
+
+        cases = [
+            (
+                CustomEndpointProvider,
+                "https://api.example.com/v1/images/generations",
+                {"data": [{"url": "https://cdn.example.com/custom.png"}]},
+                {"user_refs": [ref_data_url], "api_key": secret, "b64_json": raw_b64},
+            ),
+            (
+                OpenAIProvider,
+                "https://api.example.com/v1",
+                {"data": [{"url": "https://cdn.example.com/openai.png"}]},
+                {"api_key": secret, "b64_json": raw_b64},
+            ),
+            (
+                OpenAIChatProvider,
+                "https://api.example.com/v1",
+                {"choices": [{"message": {"content": "https://cdn.example.com/chat.png"}}]},
+                {"api_key": secret, "b64_json": raw_b64},
+            ),
+        ]
+
+        for provider_cls, endpoint, response_payload, kwargs in cases:
+            with self.subTest(provider_cls=provider_cls.__name__):
+                fake_logger.messages.clear()
+                provider, session = self._provider(endpoint, response_payload, provider_cls=provider_cls)
+
+                await provider.generate_image(long_prompt, **kwargs)
+
+                sent_payload = session.posts[0]["json"]
+                if provider_cls is CustomEndpointProvider:
+                    self.assertEqual(sent_payload["prompt"], long_prompt)
+                    self.assertEqual(sent_payload["image"], ref_data_url)
+                elif provider_cls is OpenAIProvider:
+                    self.assertEqual(sent_payload["prompt"], long_prompt)
+                else:
+                    self.assertIn(long_prompt, sent_payload["messages"][0]["content"][0]["text"])
+                self.assertEqual(sent_payload["api_key"], secret)
+                self.assertEqual(sent_payload["b64_json"], raw_b64)
+
+                logs = self._log_text()
+                self.assertNotIn(secret, logs)
+                self.assertNotIn(raw_b64[:40], logs)
+                self.assertNotIn(long_prompt, logs)
+                self.assertNotIn("PROMPT_TAIL_SHOULD_NOT_LOG", logs)
+                self.assertIn("<redacted>", logs)
+                self.assertIn("<image_base64", logs)
+                self.assertIn("<truncated chars=", logs)
+
+    async def test_provider_error_logs_and_exceptions_are_sanitized(self):
+        raw_b64 = base64.b64encode(b"provider-error-image" * 40).decode("ascii")
+        secret = "sk-error-secret-should-not-log"
+        long_detail = ("echoed error detail " * 40) + "ERROR_TAIL_SHOULD_NOT_LOG"
+        error_payload = {
+            "error": {
+                "message": {
+                    "api_key": secret,
+                    "image": raw_b64,
+                    "detail": long_detail,
+                }
+            }
+        }
+
+        cases = [
+            (CustomEndpointProvider, "https://api.example.com/v1/images/generations"),
+            (OpenAIProvider, "https://api.example.com/v1"),
+            (OpenAIChatProvider, "https://api.example.com/v1"),
+        ]
+
+        for provider_cls, endpoint in cases:
+            with self.subTest(provider_cls=provider_cls.__name__):
+                fake_logger.messages.clear()
+                provider, _ = self._provider(endpoint, error_payload, provider_cls=provider_cls, status=400)
+
+                with self.assertRaises(RuntimeError) as raised:
+                    await provider.generate_image("draw a cat")
+
+                combined = str(raised.exception) + "\n" + self._log_text()
+                self.assertNotIn(secret, combined)
+                self.assertNotIn(raw_b64[:40], combined)
+                self.assertNotIn("ERROR_TAIL_SHOULD_NOT_LOG", combined)
+                self.assertIn("<redacted>", combined)
+                self.assertIn("<image_base64", combined)
+
+    async def test_unexpected_success_response_exception_is_summarized(self):
+        raw_b64 = base64.b64encode(b"unexpected-success-image" * 35).decode("ascii")
+        payload = {
+            "error": {
+                "api_key": "sk-success-secret-should-not-log",
+                "image": raw_b64,
+                "detail": "x" * 700,
+            }
+        }
+        provider, _ = self._provider("https://api.example.com/v1", payload, provider_cls=OpenAIProvider)
+
+        with self.assertRaises(ValueError) as raised:
+            await provider.generate_image("draw a cat")
+
+        message = str(raised.exception)
+        self.assertNotIn("sk-success-secret-should-not-log", message)
+        self.assertNotIn(raw_b64[:40], message)
+        self.assertIn("<redacted>", message)
+        self.assertIn("<image_base64", message)
 
 
 if __name__ == "__main__":

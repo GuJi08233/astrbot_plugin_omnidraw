@@ -14,6 +14,8 @@ from .base import (
     extract_image_url_from_response,
     guess_image_content_type,
     summarize_payload_json_for_log,
+    summarize_response_text_for_log,
+    summarize_text_for_log,
 )
 
 class OpenAIChatProvider(BaseProvider):
@@ -84,7 +86,7 @@ class OpenAIChatProvider(BaseProvider):
             "text": full_prompt
         })
         
-        logger.info(f"📝 [Chat/Vision通道] 最终发送给 API 的核心提示词:\n{prompt}")
+        logger.info(f"📝 [Chat/Vision通道] 最终提示词摘要: {summarize_text_for_log(prompt)}")
 
         payload = {
             "model": self.config.model,
@@ -116,10 +118,14 @@ class OpenAIChatProvider(BaseProvider):
             status = response.status
             if status != 200:
                 error_text = await response.text()
+                logger.error("💥 Chat/Vision通道 API 返回错误摘要: " + summarize_response_text_for_log(error_text, max_string_length=500))
                 raise RuntimeError("HTTP " + str(status) + ": " + extract_error_message(error_text))
             
             result = await response.json()
             image_url = extract_image_url_from_response(result, self.config.base_url)
             if image_url:
                 return image_url
-            raise ValueError("Chat接口未返回有效图片链接。API原始返回: " + str(result))
+            raise ValueError(
+                "Chat接口未返回有效图片链接。API返回摘要: "
+                + summarize_payload_json_for_log(result, max_string_length=500)
+            )

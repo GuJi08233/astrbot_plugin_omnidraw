@@ -12,6 +12,8 @@ from .base import (
     extract_image_url_from_response,
     guess_image_content_type,
     summarize_payload_json_for_log,
+    summarize_response_text_for_log,
+    summarize_text_for_log,
 )
 
 class OpenAIProvider(BaseProvider):
@@ -53,7 +55,7 @@ class OpenAIProvider(BaseProvider):
         base_url = self.config.base_url
         ref_images = self.get_reference_images(**kwargs)
 
-        logger.info(f"📝 [标准通道] 最终发送给 API 的核心提示词:\n{prompt}")
+        logger.info(f"📝 [标准通道] 最终提示词摘要: {summarize_text_for_log(prompt)}")
 
         # 🚀 剥离内置参数，剩下的全是用户或 LLM 透传的高级参数
         internal_keys = {"user_refs", "user_ref", "persona_refs", "persona_ref"}
@@ -135,7 +137,7 @@ class OpenAIProvider(BaseProvider):
         status = response.status
         if status != 200:
             error_text = await response.text()
-            logger.error("💥 API 返回错误:\n" + error_text)
+            logger.error("💥 API 返回错误摘要: " + summarize_response_text_for_log(error_text, max_string_length=500))
             error_msg = extract_error_message(error_text)
 
             raise RuntimeError("HTTP " + str(status) + ": " + error_msg)
@@ -145,4 +147,7 @@ class OpenAIProvider(BaseProvider):
         if image_url:
             return image_url
 
-        raise ValueError("API 返回结构异常，未找到图片数据: " + str(result))
+        raise ValueError(
+            "API 返回结构异常，未找到图片数据: "
+            + summarize_payload_json_for_log(result, max_string_length=500)
+        )
