@@ -51,6 +51,7 @@ extract_image_url_from_response = base_module.extract_image_url_from_response
 is_complete_endpoint_url = base_module.is_complete_endpoint_url
 summarize_payload_for_log = base_module.summarize_payload_for_log
 summarize_text_for_log = base_module.summarize_text_for_log
+summarize_url_for_log = base_module.summarize_url_for_log
 CustomEndpointProvider = custom_endpoint_module.CustomEndpointProvider
 OpenAIProvider = openai_impl_module.OpenAIProvider
 OpenAIChatProvider = openai_chat_module.OpenAIChatProvider
@@ -187,7 +188,7 @@ class CustomEndpointHelpersTest(unittest.TestCase):
         self.assertNotIn(raw_image[:40], str(summary))
         self.assertEqual(summary["b64_json"], f"<image_base64 chars={len(raw_image)}>")
         self.assertEqual(summary["image"], f"<image_base64 chars={len(raw_image)}>")
-        self.assertIn("<truncated chars=220>", text_summary)
+        self.assertEqual(text_summary, "<text chars=220>")
         self.assertEqual(summary["api_key"], "<redacted>")
 
     def test_extract_error_message_sanitizes_echoed_payload(self):
@@ -211,14 +212,32 @@ class CustomEndpointHelpersTest(unittest.TestCase):
 
     def test_plain_text_log_summary_redacts_embedded_secrets_and_data_urls(self):
         image_data_url = "data:image/png;base64," + _long_b64()
-        text = "api_key=sk-plain-secret-should-not-log failed for image " + image_data_url
+        text = "API key: AIzaSyExampleSecret123456789 failed for image " + image_data_url + ". prompt: draw a cat"
 
         summary = summarize_text_for_log(text, max_string_length=500)
 
-        self.assertNotIn("sk-plain-secret-should-not-log", summary)
+        self.assertNotIn("AIzaSyExampleSecret123456789", summary)
+        self.assertNotIn("draw a cat", summary)
         self.assertNotIn(_long_b64()[:40], summary)
-        self.assertIn("api_key=<redacted>", summary)
+        self.assertIn("API key=<redacted>", summary)
+        self.assertIn("prompt=<redacted>", summary)
         self.assertIn("<image_data_url", summary)
+
+    def test_url_summary_redacts_custom_endpoint_query_values(self):
+        endpoint = (
+            "https://api.example.com/v1/images/generations"
+            "?api_key=AIzaSyExampleSecret123456789&token=plain-token&size=1024x1024"
+        )
+
+        summary = summarize_url_for_log(endpoint)
+
+        self.assertIn("https://api.example.com/v1/images/generations", summary)
+        self.assertIn("api_key=<redacted>", summary)
+        self.assertIn("token=<redacted>", summary)
+        self.assertIn("size=<redacted>", summary)
+        self.assertNotIn("AIzaSyExampleSecret123456789", summary)
+        self.assertNotIn("plain-token", summary)
+        self.assertNotIn("1024x1024", summary)
 
 
 class CustomEndpointProviderTest(unittest.IsolatedAsyncioTestCase):
@@ -402,7 +421,61 @@ class CustomEndpointProviderTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("PROMPT_TAIL_SHOULD_NOT_LOG", logs)
                 self.assertIn("<redacted>", logs)
                 self.assertIn("<image_base64", logs)
-                self.assertIn("<truncated chars=", logs)
+                self.assertIn("<prompt chars=", logs)
+
+    async def test_short_prompts_and_custom_endpoint_queries_do_not_leak_to_logs(self):
+        short_prompt = "draw a cat"
+        query_secret = "AIzaSyQuerySecret123456789"
+        cases = [
+            (
+                CustomEndpointProvider,
+                "https://api.example.com/v1/images/generations?api_key=" + query_secret + "&size=1024x1024",
+                {"data": [{"url": "https://cdn.example.com/custom.png"}]},
+                lambda payload: payload["prompt"],
+            ),
+            (
+                CustomEndpointProvider,
+                "https://api.example.com/v1/chat/completions",
+                {"choices": [{"message": {"content": "https://cdn.example.com/custom-chat.png"}}]},
+                lambda payload: payload["messages"][0]["content"][0]["text"],
+            ),
+            (
+                CustomEndpointProvider,
+                "https://api.example.com/v1/responses",
+                {"output": [{"type": "image_generation_call", "result": _long_b64()}]},
+                lambda payload: payload["input"],
+            ),
+            (
+                OpenAIProvider,
+                "https://api.example.com/v1",
+                {"data": [{"url": "https://cdn.example.com/openai.png"}]},
+                lambda payload: payload["prompt"],
+            ),
+            (
+                OpenAIChatProvider,
+                "https://api.example.com/v1",
+                {"choices": [{"message": {"content": "https://cdn.example.com/chat.png"}}]},
+                lambda payload: payload["messages"][0]["content"][0]["text"],
+            ),
+        ]
+
+        for provider_cls, endpoint, response_payload, prompt_getter in cases:
+            with self.subTest(provider_cls=provider_cls.__name__, endpoint=endpoint):
+                fake_logger.messages.clear()
+                provider, session = self._provider(endpoint, response_payload, provider_cls=provider_cls)
+
+                await provider.generate_image(short_prompt)
+
+                self.assertIn(short_prompt, prompt_getter(session.posts[0]["json"]))
+                if provider_cls is CustomEndpointProvider:
+                    self.assertEqual(session.posts[0]["url"], endpoint)
+                logs = self._log_text()
+                self.assertNotIn(short_prompt, logs)
+                self.assertNotIn(query_secret, logs)
+                self.assertNotIn("1024x1024", logs)
+                self.assertIn("<prompt chars=", logs)
+                if query_secret in endpoint:
+                    self.assertIn("api_key=<redacted>", logs)
 
     async def test_provider_error_logs_and_exceptions_are_sanitized(self):
         raw_b64 = base64.b64encode(b"provider-error-image" * 40).decode("ascii")
@@ -438,6 +511,29 @@ class CustomEndpointProviderTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("ERROR_TAIL_SHOULD_NOT_LOG", combined)
                 self.assertIn("<redacted>", combined)
                 self.assertIn("<image_base64", combined)
+
+    async def test_short_error_text_does_not_echo_prompt_or_non_openai_key(self):
+        query_secret = "AIzaSyErrorSecret123456789"
+        error_payload = {"error": {"message": "Invalid API key: " + query_secret + " for prompt: draw a cat"}}
+        cases = [
+            (CustomEndpointProvider, "https://api.example.com/v1/images/generations"),
+            (OpenAIProvider, "https://api.example.com/v1"),
+            (OpenAIChatProvider, "https://api.example.com/v1"),
+        ]
+
+        for provider_cls, endpoint in cases:
+            with self.subTest(provider_cls=provider_cls.__name__):
+                fake_logger.messages.clear()
+                provider, _ = self._provider(endpoint, error_payload, provider_cls=provider_cls, status=400)
+
+                with self.assertRaises(RuntimeError) as raised:
+                    await provider.generate_image("draw a cat")
+
+                combined = str(raised.exception) + "\n" + self._log_text()
+                self.assertNotIn(query_secret, combined)
+                self.assertNotIn("draw a cat", combined)
+                self.assertIn("API key=<redacted>", combined)
+                self.assertIn("prompt=<redacted>", combined)
 
     async def test_unexpected_success_response_exception_is_summarized(self):
         raw_b64 = base64.b64encode(b"unexpected-success-image" * 35).decode("ascii")

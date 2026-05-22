@@ -18,6 +18,7 @@ from .base import (
     summarize_payload_json_for_log,
     summarize_response_text_for_log,
     summarize_text_for_log,
+    summarize_url_for_log,
 )
 
 
@@ -117,7 +118,7 @@ class CustomEndpointProvider(BaseProvider):
 
     async def _post_json(self, endpoint: str, headers: Dict[str, str], payload: Dict[str, Any]) -> str:
         timeout_obj = aiohttp.ClientTimeout(total=self.config.timeout)
-        logger.info(f"📤 [自定义通道] 请求完整路径: {endpoint}")
+        logger.info(f"📤 [自定义通道] 请求完整路径: {summarize_url_for_log(endpoint)}")
         logger.info(f"📤 [自定义通道] 请求体摘要: {summarize_payload_json_for_log(payload)}")
         async with self.session.post(endpoint, json=payload, headers=headers, timeout=timeout_obj) as response:
             return await self._parse_response(response, endpoint)
@@ -149,7 +150,7 @@ class CustomEndpointProvider(BaseProvider):
             data.add_field(key, str(value))
 
         timeout_obj = aiohttp.ClientTimeout(total=self.config.timeout)
-        logger.info(f"📤 [自定义通道] 以 multipart 请求完整路径: {endpoint}")
+        logger.info(f"📤 [自定义通道] 以 multipart 请求完整路径: {summarize_url_for_log(endpoint)}")
         async with self.session.post(endpoint, data=data, headers=headers, timeout=timeout_obj) as response:
             return await self._parse_response(response, endpoint)
 
@@ -187,7 +188,7 @@ class CustomEndpointProvider(BaseProvider):
         api_kwargs = {key: value for key, value in kwargs.items() if key not in internal_keys}
         headers = {"Authorization": "Bearer " + current_key}
 
-        logger.info(f"📝 [自定义通道] 最终提示词摘要: {summarize_text_for_log(prompt)}")
+        logger.info(f"📝 [自定义通道] 最终提示词摘要: {summarize_text_for_log(prompt, key_hint='prompt')}")
 
         if endpoint_path.endswith("/images/edits") and not ref_images:
             raise ValueError("自定义 /images/edits 完整路径需要至少一张参考图。")

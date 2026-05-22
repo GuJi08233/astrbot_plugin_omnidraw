@@ -55,7 +55,7 @@ class OpenAIProvider(BaseProvider):
         base_url = self.config.base_url
         ref_images = self.get_reference_images(**kwargs)
 
-        logger.info(f"📝 [标准通道] 最终提示词摘要: {summarize_text_for_log(prompt)}")
+        logger.info(f"📝 [标准通道] 最终提示词摘要: {summarize_text_for_log(prompt, key_hint='prompt')}")
 
         # 🚀 剥离内置参数，剩下的全是用户或 LLM 透传的高级参数
         internal_keys = {"user_refs", "user_ref", "persona_refs", "persona_ref"}
