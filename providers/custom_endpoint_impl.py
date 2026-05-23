@@ -76,11 +76,7 @@ class CustomEndpointProvider(BaseProvider):
         content.append(
             {
                 "type": "text",
-                "text": (
-                    "Generate an image from the following prompt and return only one image URL, "
-                    "data URL, or markdown image link.\n\n"
-                    f"Prompt: {prompt}"
-                ),
+                "text": str(prompt or ""),
             }
         )
         payload = {"model": self.config.model, "messages": [{"role": "user", "content": content}]}

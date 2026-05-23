@@ -57,11 +57,11 @@ class VideoManager:
         seconds = max(0.0, float(elapsed_seconds or 0.0))
         return f"{seconds:.1f}s"
 
-    def _build_success_text(self, elapsed_seconds: float, model: str) -> str:
+    def _build_success_text(self, elapsed_seconds: float, model: str, include_metadata: bool = True) -> str:
         lines = ["🎬 当当当！你要求的视频渲染完成啦："]
-        if getattr(self.config, "show_generation_time", False):
+        if include_metadata and getattr(self.config, "show_generation_time", False):
             lines.append(f"⏱️ 生成耗时：{self._format_elapsed(elapsed_seconds)}")
-        if getattr(self.config, "show_request_model", False) and str(model or "").strip():
+        if include_metadata and getattr(self.config, "show_request_model", False) and str(model or "").strip():
             lines.append(f"🤖 请求模型：{str(model).strip()}")
         return "\n".join(lines) + "\n"
 
@@ -244,6 +244,7 @@ class VideoManager:
         prompt: str,
         image_urls: Optional[List[str]] = None,
         api_kwargs: Optional[Dict[str, Any]] = None,
+        include_metadata: bool = True,
     ) -> None:
         start_time = time.perf_counter()
         providers = self._get_video_provider_chain()
@@ -264,7 +265,11 @@ class VideoManager:
                         if not video_url:
                             raise VideoTaskError("API 没有返回有效视频链接。")
                         await event.send(event.chain_result([
-                            Plain(self._build_success_text(elapsed, self._effective_request_model(provider, api_kwargs))),
+                            Plain(self._build_success_text(
+                                elapsed,
+                                self._effective_request_model(provider, api_kwargs),
+                                include_metadata=include_metadata,
+                            )),
                             Video.fromURL(video_url),
                         ]))
                         return

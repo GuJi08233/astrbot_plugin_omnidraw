@@ -1506,10 +1506,11 @@ class OmniDrawPlugin(Star):
         self,
         result: Any,
         elapsed_seconds: Optional[float] = None,
+        include_metadata: bool = True,
     ) -> List[Any]:
         image_url = self._get_image_result_url(result)
         components: List[Any] = []
-        if isinstance(result, ChainRunResult):
+        if include_metadata and isinstance(result, ChainRunResult):
             display_elapsed = elapsed_seconds if elapsed_seconds is not None else result.elapsed_seconds
             lines = self._generation_metadata_lines(display_elapsed, result.model)
             if lines:
@@ -1635,12 +1636,15 @@ class OmniDrawPlugin(Star):
         event: AstrMessageEvent,
         results: Iterable[Any],
         elapsed_seconds: Optional[float] = None,
+        include_metadata: bool = False,
     ) -> int:
         sent = 0
         for result in results:
             if not self._get_image_result_url(result):
                 continue
-            await event.send(event.chain_result(self._build_image_success_components(result, elapsed_seconds)))
+            await event.send(event.chain_result(
+                self._build_image_success_components(result, elapsed_seconds, include_metadata=include_metadata)
+            ))
             sent += 1
             await asyncio.sleep(0.5)
         return sent
@@ -2120,7 +2124,6 @@ class OmniDrawPlugin(Star):
             return permission_error
 
         try:
-            started_at = time.perf_counter()
             count = self._normalize_count(count)
             quota_error = self._image_quota_error_message(event, count)
             if quota_error:
@@ -2152,7 +2155,7 @@ class OmniDrawPlugin(Star):
             valid_results = [result for result in results if self._get_image_result_url(result)]
             if not valid_results:
                 raise RuntimeError("所有绘图节点请求失败")
-            sent = await self._send_generated_images(event, valid_results, time.perf_counter() - started_at)
+            sent = await self._send_generated_images(event, valid_results)
             self._record_generated_images(event, sent)
             return f"系统提示：已成功生成并下发了 {sent} 张图。"
         except Exception as exc:
@@ -2183,7 +2186,6 @@ class OmniDrawPlugin(Star):
             return permission_error
 
         try:
-            started_at = time.perf_counter()
             count = self._normalize_count(count)
             quota_error = self._image_quota_error_message(event, count)
             if quota_error:
@@ -2209,7 +2211,7 @@ class OmniDrawPlugin(Star):
             valid_results = [result for result in results if self._get_image_result_url(result)]
             if not valid_results:
                 raise RuntimeError("所有绘图节点请求失败")
-            sent = await self._send_generated_images(event, valid_results, time.perf_counter() - started_at)
+            sent = await self._send_generated_images(event, valid_results)
             self._record_generated_images(event, sent)
             return f"系统提示：已成功下发 {sent} 张图。"
         except Exception as exc:
@@ -2257,7 +2259,15 @@ class OmniDrawPlugin(Star):
                 kwargs["size"] = size
 
             for _ in range(count):
-                self._create_background_task(self.video_manager.background_task_runner(event, prompt, safe_refs, kwargs))
+                self._create_background_task(
+                    self.video_manager.background_task_runner(
+                        event,
+                        prompt,
+                        safe_refs,
+                        kwargs,
+                        include_metadata=False,
+                    )
+                )
             return f"系统提示：已在后台独立提交了 {count} 个视频渲染任务。请告诉用户正在渲染中。"
         except Exception as exc:
             logger.error(f"[OmniDraw] LLM 视频工具失败: {exc}", exc_info=True)

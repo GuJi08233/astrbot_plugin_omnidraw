@@ -422,13 +422,13 @@
   "show_generation_time": {
     "description": "成功后显示生成耗时",
     "type": "bool",
-    "hint": "开启后，/画、宏指令、/自拍 和视频成功返回时会附带本次生成耗时。",
+    "hint": "开启后，/画、宏指令、/自拍 和 /视频 指令成功返回时会附带本次生成耗时。",
     "default": false
   },
   "show_request_model": {
     "description": "成功后显示请求模型",
     "type": "bool",
-    "hint": "开启后，/画、宏指令、/自拍 和视频成功返回时会附带实际成功节点使用的模型名。",
+    "hint": "开启后，/画、宏指令、/自拍 和 /视频 指令成功返回时会附带实际成功节点使用的模型名。",
     "default": false
   }
 }
