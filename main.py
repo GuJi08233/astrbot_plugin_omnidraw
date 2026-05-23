@@ -54,7 +54,7 @@ from .constants import (
     MAX_IMAGE_BYTES,
     MessageEmoji,
 )
-from .core.chain_manager import ChainManager
+from .core.chain_manager import ChainManager, ChainRunResult
 from .core.parser import CommandParser
 from .core.persona_manager import PersonaManager
 from .core.prompt_optimizer import PromptOptimizer
@@ -93,6 +93,8 @@ CONFIG_KEYS = {
     "cache_config",
     "reply_config",
     "verbose_report",
+    "show_generation_time",
+    "show_request_model",
 }
 
 
@@ -1476,6 +1478,49 @@ class OmniDrawPlugin(Star):
             return Image.fromURL(image_url)
         return Image.fromFileSystem(os.path.abspath(image_url))
 
+    def _format_generation_elapsed(self, elapsed_seconds: Optional[float]) -> str:
+        try:
+            seconds = max(0.0, float(elapsed_seconds))
+        except (TypeError, ValueError):
+            seconds = 0.0
+        if seconds < 60:
+            return f"{seconds:.1f} 秒"
+        minutes = int(seconds // 60)
+        remainder = seconds - (minutes * 60)
+        return f"{minutes} 分 {remainder:.1f} 秒"
+
+    def _generation_metadata_lines(
+        self,
+        elapsed_seconds: Optional[float] = None,
+        model: str = "",
+    ) -> List[str]:
+        lines = []
+        if getattr(self.plugin_config, "show_generation_time", False) and elapsed_seconds is not None:
+            lines.append(f"⏱️ 生图耗时：{self._format_generation_elapsed(elapsed_seconds)}")
+        if getattr(self.plugin_config, "show_request_model", False) and str(model or "").strip():
+            lines.append(f"🤖 请求模型：{str(model).strip()}")
+        return lines
+
+    def _get_image_result_url(self, result: Any) -> str:
+        if isinstance(result, ChainRunResult):
+            return result.image_url
+        return result if isinstance(result, str) else ""
+
+    def _build_image_success_components(
+        self,
+        result: Any,
+        elapsed_seconds: Optional[float] = None,
+    ) -> List[Any]:
+        image_url = self._get_image_result_url(result)
+        components: List[Any] = []
+        if isinstance(result, ChainRunResult):
+            display_elapsed = elapsed_seconds if elapsed_seconds is not None else result.elapsed_seconds
+            lines = self._generation_metadata_lines(display_elapsed, result.model)
+            if lines:
+                components.append(Plain("\n".join(lines) + "\n"))
+        components.append(self._create_image_component(image_url))
+        return components
+
     def _get_active_provider(self, chain_type: str = "text2img"):
         chain = self.plugin_config.chains.get(chain_type, [])
         if chain_type == "video":
@@ -1589,12 +1634,17 @@ class OmniDrawPlugin(Star):
 
         return None
 
-    async def _send_generated_images(self, event: AstrMessageEvent, urls: Iterable[str]) -> int:
+    async def _send_generated_images(
+        self,
+        event: AstrMessageEvent,
+        results: Iterable[Any],
+        elapsed_seconds: Optional[float] = None,
+    ) -> int:
         sent = 0
-        for url in urls:
-            if not isinstance(url, str) or not url:
+        for result in results:
+            if not self._get_image_result_url(result):
                 continue
-            await event.send(event.chain_result([self._create_image_component(url)]))
+            await event.send(event.chain_result(self._build_image_success_components(result, elapsed_seconds)))
             sent += 1
             await asyncio.sleep(0.5)
         return sent
@@ -1851,6 +1901,7 @@ class OmniDrawPlugin(Star):
             return
 
         try:
+            started_at = time.perf_counter()
             async with aiohttp.ClientSession() as session:
                 raw_refs = self._get_event_images(event)
                 preset_prompt = self.plugin_config.presets[cmd_name]
@@ -1870,9 +1921,9 @@ class OmniDrawPlugin(Star):
                 yield event.plain_result(msg)
 
                 chain_manager = ChainManager(self.plugin_config, session)
-                image_url = await chain_manager.run_chain("text2img", preset_prompt, user_refs=safe_refs)
+                result = await chain_manager.run_chain_with_metadata("text2img", preset_prompt, user_refs=safe_refs)
             self._record_generated_images(event, 1)
-            yield event.chain_result([self._create_image_component(image_url)])
+            yield event.chain_result(self._build_image_success_components(result, time.perf_counter() - started_at))
         except Exception as exc:
             yield event.plain_result(
                 self._build_command_error_message("on_message_preset", exc) or f"💥 绘制失败: {exc}"
@@ -1910,6 +1961,7 @@ class OmniDrawPlugin(Star):
             yield event.plain_result(f"{MessageEmoji.WARNING} 请输入提示词或附带参考图。")
             return
 
+        started_at = time.perf_counter()
         async with aiohttp.ClientSession() as session:
             safe_refs = await self._process_and_save_images(raw_refs, session=session)
             prompt, kwargs = self.cmd_parser.parse(message)
@@ -1933,9 +1985,9 @@ class OmniDrawPlugin(Star):
             yield event.plain_result(msg)
 
             chain_manager = ChainManager(self.plugin_config, session)
-            image_url = await chain_manager.run_chain("text2img", prompt, **kwargs)
+            result = await chain_manager.run_chain_with_metadata("text2img", prompt, **kwargs)
         self._record_generated_images(event, 1)
-        yield event.chain_result([self._create_image_component(image_url)])
+        yield event.chain_result(self._build_image_success_components(result, time.perf_counter() - started_at))
 
     @filter.command("自拍")
     @handle_errors
@@ -1967,6 +2019,7 @@ class OmniDrawPlugin(Star):
         user_input, kwargs = self.cmd_parser.parse(message)
         user_input = user_input or "看着镜头微笑"
 
+        started_at = time.perf_counter()
         async with aiohttp.ClientSession() as session:
             optimized_actions = await self.prompt_optimizer.optimize(user_input, count=1, session=session)
             final_prompt, extra_kwargs = self.persona_manager.build_persona_prompt(optimized_actions[0] if optimized_actions else user_input)
@@ -1996,9 +2049,9 @@ class OmniDrawPlugin(Star):
 
             chain_to_use = "selfie" if self.plugin_config.chains.get("selfie") else "text2img"
             chain_manager = ChainManager(self.plugin_config, session)
-            image_url = await chain_manager.run_chain(chain_to_use, final_prompt, **extra_kwargs)
+            result = await chain_manager.run_chain_with_metadata(chain_to_use, final_prompt, **extra_kwargs)
         self._record_generated_images(event, 1)
-        yield event.chain_result([self._create_image_component(image_url)])
+        yield event.chain_result(self._build_image_success_components(result, time.perf_counter() - started_at))
 
     @filter.command("视频")
     @handle_errors
@@ -2071,6 +2124,7 @@ class OmniDrawPlugin(Star):
             return permission_error
 
         try:
+            started_at = time.perf_counter()
             count = self._normalize_count(count)
             quota_error = self._image_quota_error_message(event, count)
             if quota_error:
@@ -2096,13 +2150,13 @@ class OmniDrawPlugin(Star):
                     if size:
                         kwargs["size"] = size
                     kwargs.update(extra_param_kwargs)
-                    tasks.append(chain_manager.run_chain(chain_to_use, final_prompt, **kwargs))
+                    tasks.append(chain_manager.run_chain_with_metadata(chain_to_use, final_prompt, **kwargs))
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            valid_urls = [result for result in results if isinstance(result, str) and result]
-            if not valid_urls:
+            valid_results = [result for result in results if self._get_image_result_url(result)]
+            if not valid_results:
                 raise RuntimeError("所有绘图节点请求失败")
-            sent = await self._send_generated_images(event, valid_urls)
+            sent = await self._send_generated_images(event, valid_results, time.perf_counter() - started_at)
             self._record_generated_images(event, sent)
             return f"系统提示：已成功生成并下发了 {sent} 张图。"
         except Exception as exc:
@@ -2133,6 +2187,7 @@ class OmniDrawPlugin(Star):
             return permission_error
 
         try:
+            started_at = time.perf_counter()
             count = self._normalize_count(count)
             quota_error = self._image_quota_error_message(event, count)
             if quota_error:
@@ -2149,13 +2204,16 @@ class OmniDrawPlugin(Star):
                 kwargs.update(self._parse_extra_params(extra_params))
 
                 chain_manager = ChainManager(self.plugin_config, session)
-                tasks = [chain_manager.run_chain("text2img", optimized_action, **kwargs) for optimized_action in optimized_actions]
+                tasks = [
+                    chain_manager.run_chain_with_metadata("text2img", optimized_action, **kwargs)
+                    for optimized_action in optimized_actions
+                ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            valid_urls = [result for result in results if isinstance(result, str) and result]
-            if not valid_urls:
+            valid_results = [result for result in results if self._get_image_result_url(result)]
+            if not valid_results:
                 raise RuntimeError("所有绘图节点请求失败")
-            sent = await self._send_generated_images(event, valid_urls)
+            sent = await self._send_generated_images(event, valid_results, time.perf_counter() - started_at)
             self._record_generated_images(event, sent)
             return f"系统提示：已成功下发 {sent} 张图。"
         except Exception as exc:

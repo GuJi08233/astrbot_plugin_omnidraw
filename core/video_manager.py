@@ -53,6 +53,26 @@ class VideoManager:
     def _chat_endpoint(self, base_url: str) -> str:
         return build_chat_completions_endpoint(base_url)
 
+    def _format_elapsed(self, elapsed_seconds: float) -> str:
+        seconds = max(0.0, float(elapsed_seconds or 0.0))
+        if seconds < 60:
+            return f"{seconds:.1f} 秒"
+        minutes = int(seconds // 60)
+        remainder = seconds - (minutes * 60)
+        return f"{minutes} 分 {remainder:.1f} 秒"
+
+    def _build_success_text(self, elapsed_seconds: float, model: str) -> str:
+        lines = ["🎬 当当当！你要求的视频渲染完成啦："]
+        if getattr(self.config, "show_generation_time", False):
+            lines.append(f"⏱️ 生成耗时：{self._format_elapsed(elapsed_seconds)}")
+        if getattr(self.config, "show_request_model", False) and str(model or "").strip():
+            lines.append(f"🤖 请求模型：{str(model).strip()}")
+        return "\n".join(lines) + "\n"
+
+    def _effective_request_model(self, provider: ProviderConfig, api_kwargs: Optional[Dict[str, Any]]) -> str:
+        api_kwargs = api_kwargs if isinstance(api_kwargs, dict) else {}
+        return str(api_kwargs.get("model") or provider.model or "").strip()
+
     async def _encode_image_to_base64(self, image_ref: str, session: aiohttp.ClientSession) -> str:
         try:
             content_type = ""
@@ -248,7 +268,7 @@ class VideoManager:
                         if not video_url:
                             raise VideoTaskError("API 没有返回有效视频链接。")
                         await event.send(event.chain_result([
-                            Plain(f"🎬 当当当！历时 {int(elapsed)} 秒，你要求的视频渲染完成啦：\n"),
+                            Plain(self._build_success_text(elapsed, self._effective_request_model(provider, api_kwargs))),
                             Video.fromURL(video_url),
                         ]))
                         return
