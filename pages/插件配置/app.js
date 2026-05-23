@@ -49,7 +49,9 @@ const mockConfig = {
     video_providers: [
         { id: "video_node_1", api_type: "async_task", base_url: "https://api.example.com/v1", model: "veo", available_models: ["veo"], timeout: 300, api_keys: "" }
     ],
-    verbose_report: false
+    verbose_report: false,
+    show_generation_time: false,
+    show_request_model: false
 };
 
 const mockUsageStats = {
@@ -106,7 +108,9 @@ let state = {
     presets: [],
     providers: [],
     video_providers: [],
-    verbose_report: false
+    verbose_report: false,
+    show_generation_time: false,
+    show_request_model: false
 };
 
 let initialized = false;
@@ -915,6 +919,8 @@ function bindBasicFields() {
     byId("opt_batch").value = state.optimizer_config.max_batch_count || 0;
     byId("opt_custom").value = state.optimizer_config.optimizer_custom_prompt || "";
     byId("verbose_report").checked = Boolean(state.verbose_report);
+    byId("show_generation_time").checked = Boolean(state.show_generation_time);
+    byId("show_request_model").checked = Boolean(state.show_request_model);
 }
 
 function readBasicFields() {
@@ -950,6 +956,8 @@ function readBasicFields() {
     state.optimizer_config.max_batch_count = parseInt(byId("opt_batch").value, 10) || 0;
     state.optimizer_config.optimizer_custom_prompt = byId("opt_custom").value;
     state.verbose_report = byId("verbose_report").checked;
+    state.show_generation_time = byId("show_generation_time").checked;
+    state.show_request_model = byId("show_request_model").checked;
 }
 
 function buildPayload() {
@@ -965,7 +973,9 @@ function buildPayload() {
         presets: state.presets.filter((p) => p.name.trim()).map((p) => `${p.name.trim()}:${p.prompt || ""}`),
         providers: state.providers,
         video_providers: state.video_providers,
-        verbose_report: state.verbose_report
+        verbose_report: state.verbose_report,
+        show_generation_time: state.show_generation_time,
+        show_request_model: state.show_request_model
     };
 }
 
@@ -1436,6 +1446,8 @@ async function init() {
     });
 
     state.verbose_report = Boolean(rawConfig.verbose_report);
+    state.show_generation_time = Boolean(rawConfig.show_generation_time);
+    state.show_request_model = Boolean(rawConfig.show_request_model);
 
     bindBasicFields();
     renderSelectors();

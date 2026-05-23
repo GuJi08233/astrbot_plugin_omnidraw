@@ -1,10 +1,22 @@
 """兜底链路调度器。"""
 
-import aiohttp
+import time
+from dataclasses import dataclass
 from typing import Any
+
+import aiohttp
 from astrbot.api import logger
 from ..models import PluginConfig
 from ..providers import create_provider
+
+
+@dataclass(frozen=True)
+class ChainRunResult:
+    image_url: str
+    provider_id: str
+    model: str
+    elapsed_seconds: float
+
 
 class ChainManager:
     def __init__(self, config: PluginConfig, session: aiohttp.ClientSession):
@@ -12,6 +24,14 @@ class ChainManager:
         self.session = session
 
     async def run_chain(self, chain_name: str, prompt: str, **kwargs: Any) -> str:
+        result = await self.run_chain_with_metadata(chain_name, prompt, **kwargs)
+        return result.image_url
+
+    def _effective_request_model(self, default_model: str, kwargs: Any) -> str:
+        override = kwargs.get("model") if isinstance(kwargs, dict) else None
+        return str(override or default_model or "").strip()
+
+    async def run_chain_with_metadata(self, chain_name: str, prompt: str, **kwargs: Any) -> ChainRunResult:
         raw_chain = self.config.chains.get(chain_name)
         chain = []
         seen = set()
@@ -25,6 +45,7 @@ class ChainManager:
 
         last_error = None
         skipped_errors = []
+        start_time = time.perf_counter()
 
         for provider_id in chain:
             provider_config = self.config.get_provider(provider_id)
@@ -46,7 +67,12 @@ class ChainManager:
                 provider = create_provider(provider_config, self.session)
                 result = await provider.generate_image(prompt, **kwargs)
                 logger.info(f"✅ [Chain] 节点 [{provider_id}] 创作成功！")
-                return result
+                return ChainRunResult(
+                    image_url=result,
+                    provider_id=provider_id,
+                    model=self._effective_request_model(provider_config.model, kwargs),
+                    elapsed_seconds=time.perf_counter() - start_time,
+                )
 
             except Exception as e:
                 # 增强日志捕获

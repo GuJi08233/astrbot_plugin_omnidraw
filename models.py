@@ -90,6 +90,8 @@ class PluginConfig:
     draw_error_message: str
     selfie_error_message: str
     verbose_report: bool
+    show_generation_time: bool
+    show_request_model: bool
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any], data_dir: str) -> "PluginConfig":
@@ -260,6 +262,8 @@ class PluginConfig:
             draw_error_message=draw_error_message,
             selfie_error_message=selfie_error_message,
             verbose_report=_to_bool(config_dict.get("verbose_report", False)),
+            show_generation_time=_to_bool(config_dict.get("show_generation_time", False)),
+            show_request_model=_to_bool(config_dict.get("show_request_model", False)),
         )
 
     def get_provider(self, provider_id: str) -> Optional[ProviderConfig]:
