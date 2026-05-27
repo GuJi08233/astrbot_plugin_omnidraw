@@ -25,12 +25,12 @@ from quart import jsonify, request, send_file
 try:
     from astrbot.api.star import Context, Star, register
     from astrbot.api.event import AstrMessageEvent, filter
-    from astrbot.api.message_components import Image, Plain
+    from astrbot.api.message_components import Image, Plain, At
     from astrbot.api import llm_tool, logger
 except ImportError:
     from astrbot.api.star import Context, Star, register
     from astrbot.api.event import AstrMessageEvent, filter
-    from astrbot.api.event.components import Image, Plain
+    from astrbot.api.event.components import Image, Plain, At
     from astrbot.api import llm_tool
     from astrbot.api.utils import logger
 
@@ -1052,7 +1052,20 @@ class OmniDrawPlugin(Star):
         except asyncio.CancelledError:
             raise
 
-    def _get_event_images(self, event: AstrMessageEvent) -> List[str]:
+    def _extract_at_user_id(self, obj: Any) -> str:
+        for attr in ("qq", "user_id", "target", "id", "uin"):
+            value = getattr(obj, attr, None)
+            if value:
+                return str(value).strip()
+        return ""
+
+    def _build_qq_avatar_url(self, user_id: str) -> str:
+        user_id = str(user_id or "").strip()
+        if not user_id or user_id.lower() == "all" or not re.fullmatch(r"\d+", user_id):
+            return ""
+        return f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640"
+
+    def _get_event_images(self, event: AstrMessageEvent, include_at_avatars: bool = False) -> List[str]:
         images = []
         visited = set()
 
@@ -1068,6 +1081,12 @@ class OmniDrawPlugin(Star):
                 ref = path if path and not str(path).startswith("http") else url
                 if ref:
                     images.append(str(ref))
+                return
+
+            if include_at_avatars and (obj_type == "At" or isinstance(obj, At)):
+                avatar_url = self._build_qq_avatar_url(self._extract_at_user_id(obj))
+                if avatar_url:
+                    images.append(avatar_url)
                 return
 
             if obj_type == "Plain":
@@ -1903,7 +1922,7 @@ class OmniDrawPlugin(Star):
         try:
             started_at = time.perf_counter()
             async with aiohttp.ClientSession() as session:
-                raw_refs = self._get_event_images(event)
+                raw_refs = self._get_event_images(event, include_at_avatars=True)
                 preset_prompt = self.plugin_config.presets[cmd_name]
                 safe_refs = await self._process_and_save_images(raw_refs, session=session)
 
@@ -1956,7 +1975,7 @@ class OmniDrawPlugin(Star):
 
         fallback = " ".join(str(item) for item in [p1, p2, p3, p4, p5, p6, p7, p8, p9, p10] if item).strip()
         message = self._extract_command_message(event, "画", fallback)
-        raw_refs = self._get_event_images(event)
+        raw_refs = self._get_event_images(event, include_at_avatars=True)
         if not message and not raw_refs:
             yield event.plain_result(f"{MessageEmoji.WARNING} 请输入提示词或附带参考图。")
             return
