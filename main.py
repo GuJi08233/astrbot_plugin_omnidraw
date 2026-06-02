@@ -2164,6 +2164,7 @@ class OmniDrawPlugin(Star):
                     safe_refs = await self._process_and_save_images(raw_refs, session=session)
             else:
                 safe_refs = await self._process_and_save_images(raw_refs)
+        video_refs = safe_refs + [ref for ref in self._http_image_refs(raw_refs) if ref not in safe_refs]
         prompt, kwargs = self.cmd_parser.parse(message)
         if not prompt and safe_refs:
             prompt = "根据参考图生成一段自然、流畅、清晰的视频。"
@@ -2173,7 +2174,7 @@ class OmniDrawPlugin(Star):
             msg += f"\n📝 渲染提示词: {prompt}\n⚙️ 附加参数：{len(kwargs)} 个\n🖼️ 参考图/首尾帧：{len(safe_refs)} 张"
         yield event.plain_result(msg)
 
-        self._create_background_task(self.video_manager.background_task_runner(event, prompt, safe_refs, kwargs))
+        self._create_background_task(self.video_manager.background_task_runner(event, prompt, video_refs, kwargs))
 
     @llm_tool(name="generate_selfie")
     async def tool_generate_selfie(
@@ -2337,6 +2338,7 @@ class OmniDrawPlugin(Star):
                         safe_refs = await self._process_and_save_images(raw_refs, session=session)
                 else:
                     safe_refs = await self._process_and_save_images(raw_refs)
+            video_refs = safe_refs + [ref for ref in self._http_image_refs(raw_refs) if ref not in safe_refs]
             kwargs = self._parse_extra_params(extra_params)
             if aspect_ratio:
                 kwargs["aspect_ratio"] = aspect_ratio
@@ -2348,7 +2350,7 @@ class OmniDrawPlugin(Star):
                     self.video_manager.background_task_runner(
                         event,
                         prompt,
-                        safe_refs,
+                        video_refs,
                         kwargs,
                         include_metadata=False,
                     )

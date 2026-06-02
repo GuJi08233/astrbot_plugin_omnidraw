@@ -708,6 +708,61 @@ class VideoSuccessMetadataTest(unittest.TestCase):
         self.assertNotIn("veo-3", text)
 
 
+class VideoReferenceRoutingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_cmd_video_preserves_original_url_refs_for_agnes_video(self):
+        plugin = object.__new__(OmniDrawPlugin)
+        plugin.plugin_config = types.SimpleNamespace(verbose_report=False)
+        plugin.cmd_parser = main_module.CommandParser()
+        plugin._permission_denied_message = lambda event: ""
+        plugin._extract_command_message = lambda event, command, fallback="": "animate the reference"
+        plugin._get_event_images = lambda event: ["https://example.com/input.png"]
+        plugin._http_image_refs = OmniDrawPlugin._http_image_refs.__get__(plugin, OmniDrawPlugin)
+
+        async def process_and_save_images(raw_refs, session=None):
+            return ["C:/cache/input.png"]
+
+        plugin._process_and_save_images = process_and_save_images
+        captured = {}
+
+        class FakeVideoManager:
+            def background_task_runner(
+                self,
+                event,
+                prompt,
+                image_urls,
+                api_kwargs,
+                include_metadata=True,
+            ):
+                captured["prompt"] = prompt
+                captured["image_urls"] = image_urls
+                captured["api_kwargs"] = api_kwargs
+                captured["include_metadata"] = include_metadata
+                return object()
+
+        plugin.video_manager = FakeVideoManager()
+
+        def create_background_task(coro):
+            captured["scheduled"] = True
+            return object()
+
+        plugin._create_background_task = create_background_task
+
+        class FakeEvent:
+            def plain_result(self, text):
+                return ("plain", text)
+
+        results = []
+        async for result in plugin.cmd_video(FakeEvent()):
+            results.append(result)
+
+        self.assertEqual(results[0][0], "plain")
+        self.assertTrue(captured["scheduled"])
+        self.assertEqual(captured["prompt"], "animate the reference")
+        self.assertEqual(captured["image_urls"], ["C:/cache/input.png", "https://example.com/input.png"])
+        self.assertEqual(captured["api_kwargs"], {})
+        self.assertTrue(captured["include_metadata"])
+
+
 class GeminiOfficialProviderTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         fake_logger.messages.clear()
@@ -831,8 +886,7 @@ class AgnesImageProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["model"], "agnes-image-2.1-flash")
         self.assertEqual(payload["prompt"], "draw a dense city")
         self.assertEqual(payload["size"], "1024x1024")
-        self.assertEqual(payload["extra_body"]["response_format"], "url")
-        self.assertNotIn("image", payload["extra_body"])
+        self.assertNotIn("extra_body", payload)
 
     async def test_posts_image_to_image_url_refs_in_extra_body(self):
         provider, session = self._provider()
@@ -849,6 +903,14 @@ class AgnesImageProviderTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["extra_body"]["image"], ["https://example.com/input.png"])
         self.assertEqual(payload["extra_body"]["response_format"], "url")
         self.assertEqual(payload["extra_body"]["workflow"], "edit")
+
+    async def test_posts_explicit_text_response_format_in_extra_body(self):
+        provider, session = self._provider()
+
+        await provider.generate_image("draw a poster", response_format="url")
+
+        payload = session.posts[0]["json"]
+        self.assertEqual(payload["extra_body"], {"response_format": "url"})
 
     async def test_rejects_local_refs_without_original_url(self):
         provider, session = self._provider()

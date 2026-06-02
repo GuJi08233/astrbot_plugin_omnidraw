@@ -103,9 +103,9 @@ class AgnesImageProvider(BaseProvider):
             raise ValueError("Agnes Image 节点未配置接口地址！")
 
         api_kwargs = {key: value for key, value in kwargs.items() if key not in PROVIDER_INTERNAL_KWARG_KEYS}
-        extra_body = self._parse_extra_body(api_kwargs.pop("extra_body", {}))
+        raw_extra_body = api_kwargs.pop("extra_body", {})
+        extra_body = self._parse_extra_body(raw_extra_body)
         response_format = api_kwargs.pop("response_format", None)
-        extra_body.setdefault("response_format", str(response_format or "url"))
 
         image_arg = api_kwargs.pop("image", None)
         ref_urls = self._reference_urls(kwargs)
@@ -113,6 +113,9 @@ class AgnesImageProvider(BaseProvider):
         ref_urls = self._valid_url_refs(ref_urls)
         if ref_urls:
             extra_body["image"] = ref_urls
+            extra_body.setdefault("response_format", str(response_format or "url"))
+        elif response_format:
+            extra_body["response_format"] = str(response_format)
 
         payload: Dict[str, Any] = {
             "model": self.config.model,
