@@ -15,6 +15,9 @@ const defaultCacheConfig = {
 const GEMINI_OFFICIAL_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 const GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-image-preview";
 const GEMINI_DEFAULT_MODELS = [GEMINI_DEFAULT_MODEL, "gemini-3-pro-image-preview"];
+const AGNES_IMAGE_BASE_URL = "https://apihub.agnes-ai.com/v1/images/generations";
+const AGNES_IMAGE_MODEL = "agnes-image-2.1-flash";
+const AGNES_IMAGE_MODELS = [AGNES_IMAGE_MODEL];
 
 const mockConfig = {
     permission_config: { usable_users: "", allowed_users: "", blocked_users: "", unlimited_groups: "" },
@@ -165,16 +168,30 @@ function mergeUniqueModels(...groups) {
 }
 
 function applyImageProviderDefaults(provider) {
-    if (!provider || provider.api_type !== "gemini_official") return provider;
-    if (!String(provider.base_url || "").trim() || provider.base_url === "https://api.example.com/v1") {
-        provider.base_url = GEMINI_OFFICIAL_BASE_URL;
+    if (!provider) return provider;
+    if (provider.api_type === "gemini_official") {
+        if (!String(provider.base_url || "").trim() || provider.base_url === "https://api.example.com/v1") {
+            provider.base_url = GEMINI_OFFICIAL_BASE_URL;
+        }
+        provider.available_models = mergeUniqueModels(provider.available_models || [], GEMINI_DEFAULT_MODELS);
+        if (!String(provider.model || "").trim()) {
+            provider.model = provider.available_models[0] || GEMINI_DEFAULT_MODEL;
+        }
+        const timeout = parseFloat(provider.timeout);
+        provider.timeout = Number.isFinite(timeout) && timeout >= 120 ? timeout : 120;
+        return provider;
     }
-    provider.available_models = mergeUniqueModels(provider.available_models || [], GEMINI_DEFAULT_MODELS);
-    if (!String(provider.model || "").trim()) {
-        provider.model = provider.available_models[0] || GEMINI_DEFAULT_MODEL;
+    if (provider.api_type === "agnes_image") {
+        if (!String(provider.base_url || "").trim() || provider.base_url === "https://api.example.com/v1") {
+            provider.base_url = AGNES_IMAGE_BASE_URL;
+        }
+        provider.available_models = mergeUniqueModels(provider.available_models || [], AGNES_IMAGE_MODELS);
+        if (!String(provider.model || "").trim()) {
+            provider.model = AGNES_IMAGE_MODEL;
+        }
+        const timeout = parseFloat(provider.timeout);
+        provider.timeout = Number.isFinite(timeout) && timeout >= 120 ? timeout : 120;
     }
-    const timeout = parseFloat(provider.timeout);
-    provider.timeout = Number.isFinite(timeout) && timeout >= 120 ? timeout : 120;
     return provider;
 }
 
@@ -855,12 +872,14 @@ function renderProviderCard(p, i, isVideo) {
         ? [
             ["async_task", "异步轮询"],
             ["openai_sync", "同步阻塞"],
-            ["openai_chat", "对话伪装"]
+            ["openai_chat", "对话伪装"],
+            ["agnes_video", "Agnes"]
         ]
         : [
             ["openai_image", "标准生图"],
             ["openai_chat", "对话透传"],
             ["gemini_official", "Gemini"],
+            ["agnes_image", "Agnes"],
             ["custom_endpoint", "自定义"]
         ];
 
@@ -1446,7 +1465,7 @@ async function init() {
     state.providers = (rawConfig.providers || []).map((p) => {
         const availableModels = normalizeModelList(p.available_models?.length ? p.available_models : (p.model || p["模型名称"] || ""));
         const model = p.model && !String(p.model).includes(",") ? p.model : (availableModels[0] || "");
-        return {
+        const provider = {
             id: p.id || p["节点ID"] || "",
             api_type: p.api_type || p["接口模式"] || "openai_image",
             base_url: p.base_url || p["接口地址 (需含/v1)"] || "",
@@ -1455,6 +1474,7 @@ async function init() {
             timeout: p.timeout || p["超时时间(秒)"] || 60,
             api_keys: normalizeTextAreaKeys(p.api_keys || p["API密钥"] || "")
         };
+        return applyImageProviderDefaults(provider);
     });
 
     state.video_providers = (rawConfig.video_providers || []).map((p) => {

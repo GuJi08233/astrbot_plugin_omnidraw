@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .constants import (
+    DEFAULT_AGNES_IMAGE_BASE_URL,
+    DEFAULT_AGNES_IMAGE_MODEL,
     APIType,
     DEFAULT_GEMINI_MODEL,
     DEFAULT_DRAW_ERROR_MESSAGE,
@@ -19,7 +21,7 @@ from .utils import save_image_bytes, split_data_url
 
 PLUGIN_NAME = "astrbot_plugin_omnidraw"
 PLUGIN_AUTHOR = "雪碧bir"
-PLUGIN_VERSION = "3.3.16"
+PLUGIN_VERSION = "3.3.18"
 DEFAULT_CACHE_CLEANUP_INTERVAL_HOURS = 24
 DEFAULT_MAX_CACHE_SIZE_MB = 512
 
@@ -336,6 +338,8 @@ def _normalize_api_type(value: Any, is_video: bool) -> str:
         return "async_task" if is_video else "openai_image"
     lowered = raw.lower()
     if is_video:
+        if "agnes" in lowered:
+            return "agnes_video"
         if "chat" in lowered or "对话" in raw:
             return "openai_chat"
         if "sync" in lowered or "同步" in raw:
@@ -343,6 +347,8 @@ def _normalize_api_type(value: Any, is_video: bool) -> str:
         return "async_task"
     if lowered in {"gemini", "gemini_official", "google_gemini"} or "gemini" in lowered or "gemini" in raw.lower():
         return APIType.GEMINI_OFFICIAL
+    if lowered in {"agnes", "agnes_image", "agnes-image"} or "agnes" in lowered:
+        return APIType.AGNES_IMAGE
     if lowered in {"custom_endpoint", "custom"} or "自定义" in raw:
         return APIType.CUSTOM_ENDPOINT
     if "chat" in lowered or "对话" in raw:
@@ -367,6 +373,16 @@ def _build_provider_config(raw_provider: Any, is_video: bool) -> ProviderConfig:
     api_type = _normalize_api_type(raw_provider.get("api_type", raw_provider.get("接口模式", "")), is_video)
     if api_type == APIType.GEMINI_OFFICIAL and not model:
         model = DEFAULT_GEMINI_MODEL
+    if api_type == APIType.AGNES_IMAGE and not model:
+        model = DEFAULT_AGNES_IMAGE_MODEL
+    base_url = str(
+        raw_provider.get(
+            "base_url",
+            raw_provider.get("接口地址 (需含/v1或/v2)", raw_provider.get("接口地址 (需含/v1)", "")),
+        )
+    ).strip()
+    if api_type == APIType.AGNES_IMAGE and not base_url:
+        base_url = DEFAULT_AGNES_IMAGE_BASE_URL
     if model and model not in available_models:
         available_models.insert(0, model)
 
@@ -374,12 +390,7 @@ def _build_provider_config(raw_provider: Any, is_video: bool) -> ProviderConfig:
     return ProviderConfig(
         id=str(raw_provider.get("id", raw_provider.get("节点ID", ""))).strip(),
         api_type=api_type,
-        base_url=str(
-            raw_provider.get(
-                "base_url",
-                raw_provider.get("接口地址 (需含/v1或/v2)", raw_provider.get("接口地址 (需含/v1)", "")),
-            )
-        ).strip(),
+        base_url=base_url,
         api_keys=_split_csv_or_lines(raw_provider.get("api_keys", raw_provider.get("API密钥", ""))),
         model=model,
         timeout=_to_float(raw_provider.get("timeout", raw_provider.get("超时时间(秒)", default_timeout)), default_timeout, 1.0),

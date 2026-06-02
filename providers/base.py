@@ -14,6 +14,14 @@ from ..models import ProviderConfig
 
 _KEY_ROTATION_LOCK = threading.Lock()
 _KEY_ROTATION_INDEX: Dict[str, int] = {}
+PROVIDER_INTERNAL_KWARG_KEYS = {
+    "user_refs",
+    "user_ref",
+    "persona_refs",
+    "persona_ref",
+    "_omnidraw_user_ref_urls",
+    "_omnidraw_persona_ref_urls",
+}
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -58,6 +66,8 @@ def strip_known_endpoint_path(base_url: str) -> str:
         "/images/generations",
         "/images/edits",
         "/videos/generations",
+        "/v1/images/generations",
+        "/v1/videos",
     ):
         if base_url.lower().endswith(suffix):
             return base_url[: -len(suffix)]
@@ -100,6 +110,18 @@ def build_image_generations_endpoint(base_url: str) -> str:
     return f"{base_url}/images/generations"
 
 
+def build_agnes_image_endpoint(base_url: str) -> str:
+    """构建 Agnes Image 端点: {base_url}/v1/images/generations"""
+    base_url = normalize_base_url(base_url)
+    if not base_url:
+        return ""
+    if _has_endpoint_path(base_url, ["/v1/images/generations"]):
+        return base_url
+    if base_url.lower().endswith("/v1"):
+        return f"{base_url}/images/generations"
+    return f"{base_url}/v1/images/generations"
+
+
 def build_image_edits_endpoint(base_url: str) -> str:
     base_url = normalize_base_url(base_url)
     if not base_url:
@@ -116,6 +138,25 @@ def build_video_generations_endpoint(base_url: str) -> str:
     if _has_endpoint_path(base_url, ["/videos/generations"]):
         return base_url
     return f"{base_url}/videos/generations"
+
+
+def build_agnes_video_endpoint(base_url: str) -> str:
+    """构建 Agnes Video 提交端点: {base_url}/v1/videos"""
+    base_url = normalize_base_url(base_url)
+    if not base_url:
+        return ""
+    if _has_endpoint_path(base_url, ["/v1/videos"]):
+        return base_url
+    # 如果 base_url 已含 /v1 后缀，直接追加 /videos
+    if base_url.lower().endswith("/v1"):
+        return f"{base_url}/videos"
+    return f"{base_url}/v1/videos"
+
+
+def build_agnes_video_poll_endpoint(base_url: str, task_id: str) -> str:
+    """构建 Agnes Video 轮询端点: {base_url}/v1/videos/{task_id}"""
+    endpoint = build_agnes_video_endpoint(base_url)
+    return f"{endpoint}/{task_id}"
 
 
 def next_api_key(provider_id: str, api_keys: List[str]) -> str:

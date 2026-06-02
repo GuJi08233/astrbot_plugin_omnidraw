@@ -6,6 +6,7 @@ from astrbot.api import logger
 
 from .base import (
     BaseProvider,
+    PROVIDER_INTERNAL_KWARG_KEYS,
     build_image_edits_endpoint,
     build_image_generations_endpoint,
     extract_error_message,
@@ -57,8 +58,7 @@ class OpenAIProvider(BaseProvider):
         logger.info(f"📝 [标准通道] 最终发送给 API 的核心提示词:\n{prompt}")
 
         # 🚀 剥离内置参数，剩下的全是用户或 LLM 透传的高级参数
-        internal_keys = {"user_refs", "user_ref", "persona_refs", "persona_ref"}
-        api_kwargs = {k: v for k, v in kwargs.items() if k not in internal_keys}
+        api_kwargs = {k: v for k, v in kwargs.items() if k not in PROVIDER_INTERNAL_KWARG_KEYS}
 
         if ref_images:
             url = build_image_edits_endpoint(base_url)

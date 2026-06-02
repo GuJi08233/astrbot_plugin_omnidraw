@@ -61,6 +61,11 @@ class _Image:
         return {"type": "image_url", "url": url}
 
 
+class _At:
+    def __init__(self, qq=""):
+        self.qq = qq
+
+
 class _Filter:
     class PermissionType:
         ADMIN = "admin"
@@ -95,6 +100,7 @@ async def _send_file(*args, **kwargs):
 astrbot_message_components_module.Plain = _Plain
 astrbot_message_components_module.Image = _Image
 astrbot_message_components_module.Video = _Video
+astrbot_message_components_module.At = _At
 astrbot_event_module.filter = _Filter()
 astrbot_event_module.EventMessageType = types.SimpleNamespace(ALL="all")
 astrbot_api_module.llm_tool = _identity_decorator
@@ -115,6 +121,7 @@ models_module = importlib.import_module(f"{PACKAGE_NAME}.models")
 base_module = importlib.import_module(f"{PACKAGE_NAME}.providers.base")
 custom_endpoint_module = importlib.import_module(f"{PACKAGE_NAME}.providers.custom_endpoint_impl")
 gemini_official_module = importlib.import_module(f"{PACKAGE_NAME}.providers.gemini_official_impl")
+agnes_image_module = importlib.import_module(f"{PACKAGE_NAME}.providers.agnes_image_impl")
 openai_impl_module = importlib.import_module(f"{PACKAGE_NAME}.providers.openai_impl")
 openai_chat_module = importlib.import_module(f"{PACKAGE_NAME}.providers.openai_chat_impl")
 provider_factory_module = importlib.import_module(f"{PACKAGE_NAME}.providers")
@@ -137,6 +144,7 @@ summarize_text_for_log = base_module.summarize_text_for_log
 summarize_url_for_log = base_module.summarize_url_for_log
 CustomEndpointProvider = custom_endpoint_module.CustomEndpointProvider
 GeminiOfficialProvider = gemini_official_module.GeminiOfficialProvider
+AgnesImageProvider = agnes_image_module.AgnesImageProvider
 OpenAIProvider = openai_impl_module.OpenAIProvider
 OpenAIChatProvider = openai_chat_module.OpenAIChatProvider
 
@@ -194,6 +202,10 @@ class CustomEndpointHelpersTest(unittest.TestCase):
         self.assertEqual(_normalize_api_type("gemini_official", is_video=False), "gemini_official")
         self.assertEqual(_normalize_api_type("Gemini", is_video=False), "gemini_official")
         self.assertEqual(_normalize_api_type("Gemini 官方", is_video=False), "gemini_official")
+
+    def test_agnes_image_api_type_is_preserved(self):
+        self.assertEqual(_normalize_api_type("agnes_image", is_video=False), "agnes_image")
+        self.assertEqual(_normalize_api_type("Agnes Image 2.1 Flash", is_video=False), "agnes_image")
 
     def test_extracts_gemini_inline_data_response(self):
         endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent"
@@ -425,6 +437,21 @@ class RuntimeConfigKeyTest(unittest.TestCase):
         self.assertIn("show_generation_time", config_keys)
         self.assertIn("show_request_model", config_keys)
 
+    def test_param_help_command_is_registered(self):
+        source = (PLUGIN_DIR / "main.py").read_text(encoding="utf-8")
+
+        self.assertIn('@filter.command("万象参数")', source)
+        self.assertIn("--size 1024x1024", source)
+        self.assertIn("--num_frames 241", source)
+
+    def test_agnes_video_defaults_are_quality_first(self):
+        source = (PLUGIN_DIR / "core" / "video_manager.py").read_text(encoding="utf-8")
+
+        self.assertIn('"width": 1152', source)
+        self.assertIn('"height": 768', source)
+        self.assertIn('"num_frames": 241', source)
+        self.assertIn('"frame_rate": 30', source)
+
     def test_schema_and_pages_offer_gemini_before_custom(self):
         schema = json.loads((PLUGIN_DIR / "_conf_schema.json").read_text(encoding="utf-8"))
         options = schema["providers"]["templates"]["image_provider"]["items"]["api_type"]["options"]
@@ -451,6 +478,37 @@ class RuntimeConfigKeyTest(unittest.TestCase):
         )
 
         self.assertIsInstance(provider_factory_module.create_provider(config, session=object()), GeminiOfficialProvider)
+
+    def test_provider_factory_creates_agnes_image_provider(self):
+        config = ProviderConfig(
+            id="agnes_node",
+            api_type="agnes_image",
+            base_url="https://apihub.agnes-ai.com/v1/images/generations",
+            api_keys=["test-key"],
+            model="agnes-image-2.1-flash",
+            timeout=120.0,
+        )
+
+        self.assertIsInstance(provider_factory_module.create_provider(config, session=object()), AgnesImageProvider)
+
+    def test_agnes_image_defaults_model(self):
+        config = PluginConfig.from_dict(
+            {
+                "providers": [
+                    {
+                        "id": "agnes",
+                        "api_type": "agnes_image",
+                        "base_url": "https://apihub.agnes-ai.com/v1/images/generations",
+                        "api_keys": "key-1",
+                        "model": "",
+                    }
+                ]
+            },
+            str(PLUGIN_DIR),
+        )
+
+        self.assertEqual(config.providers[0].api_type, "agnes_image")
+        self.assertEqual(config.providers[0].model, "agnes-image-2.1-flash")
 
 
 class ImageSuccessComponentsTest(unittest.TestCase):
@@ -742,6 +800,71 @@ class GeminiOfficialProviderTest(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(ValueError, "未返回图片数据"):
             await provider.generate_image("draw a cat")
+
+
+class AgnesImageProviderTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        fake_logger.messages.clear()
+
+    def _provider(self, response_payload=None, base_url="https://apihub.agnes-ai.com", status=200):
+        config = ProviderConfig(
+            id="agnes_node",
+            api_type="agnes_image",
+            base_url=base_url,
+            api_keys=["agnes-key"],
+            model="agnes-image-2.1-flash",
+            timeout=120.0,
+        )
+        payload = response_payload or {"data": [{"url": "https://cdn.example.com/agnes.png"}]}
+        session = FakeSession(FakeResponse(payload, status=status))
+        return AgnesImageProvider(config, session), session
+
+    async def test_posts_text_to_image_payload(self):
+        provider, session = self._provider()
+
+        result = await provider.generate_image("draw a dense city")
+
+        self.assertEqual(result, "https://cdn.example.com/agnes.png")
+        self.assertEqual(session.posts[0]["url"], "https://apihub.agnes-ai.com/v1/images/generations")
+        self.assertEqual(session.posts[0]["headers"]["Authorization"], "Bearer agnes-key")
+        payload = session.posts[0]["json"]
+        self.assertEqual(payload["model"], "agnes-image-2.1-flash")
+        self.assertEqual(payload["prompt"], "draw a dense city")
+        self.assertEqual(payload["size"], "1024x1024")
+        self.assertEqual(payload["extra_body"]["response_format"], "url")
+        self.assertNotIn("image", payload["extra_body"])
+
+    async def test_posts_image_to_image_url_refs_in_extra_body(self):
+        provider, session = self._provider()
+
+        await provider.generate_image(
+            "preserve composition",
+            user_refs=["C:/tmp/local-cache.png"],
+            _omnidraw_user_ref_urls=["https://example.com/input.png"],
+            size="1024x768",
+            extra_body={"response_format": "url", "workflow": "edit"},
+        )
+
+        payload = session.posts[0]["json"]
+        self.assertEqual(payload["extra_body"]["image"], ["https://example.com/input.png"])
+        self.assertEqual(payload["extra_body"]["response_format"], "url")
+        self.assertEqual(payload["extra_body"]["workflow"], "edit")
+
+    async def test_rejects_local_refs_without_original_url(self):
+        provider, session = self._provider()
+
+        with self.assertRaisesRegex(RuntimeError, "只支持可公网访问的图片 URL"):
+            await provider.generate_image("edit", user_refs=["C:/tmp/local-cache.png"])
+
+        self.assertEqual(session.posts, [])
+
+    async def test_preserves_full_agnes_endpoint(self):
+        endpoint = "https://apihub.agnes-ai.com/v1/images/generations"
+        provider, session = self._provider(base_url=endpoint)
+
+        await provider.generate_image("draw")
+
+        self.assertEqual(session.posts[0]["url"], endpoint)
 
 
 class CustomEndpointProviderTest(unittest.IsolatedAsyncioTestCase):

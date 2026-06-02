@@ -12,11 +12,29 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Plain, Video
 
 from ..models import PluginConfig, ProviderConfig
-from ..providers.base import build_chat_completions_endpoint, build_video_generations_endpoint, guess_image_content_type, next_api_key
+from ..providers.base import (
+    build_agnes_video_endpoint,
+    build_agnes_video_poll_endpoint,
+    build_chat_completions_endpoint,
+    build_video_generations_endpoint,
+    guess_image_content_type,
+    next_api_key,
+)
 
 
 class VideoTaskError(Exception):
     pass
+
+
+# Agnes Video API 中需要整型的字段（用户从命令行传入时是字符串，需转换）
+_AGNES_NUMERIC_FIELDS = frozenset({
+    "width",
+    "height",
+    "num_frames",
+    "frame_rate",
+    "num_inference_steps",
+    "seed",
+})
 
 
 class VideoManager:
@@ -141,17 +159,71 @@ class VideoManager:
 
         raise VideoTaskError(f"视频生成轮询超时，已达到设置的 {provider.timeout} 秒最大等待时间。")
 
+    async def _poll_agnes_task_result(self, provider: ProviderConfig, task_id: str, session: aiohttp.ClientSession) -> str:
+        """Agnes Video 专用轮询：使用 /v1/videos/{task_id} 端点和 Agnes 状态值。"""
+        poll_url = build_agnes_video_poll_endpoint(provider.base_url, task_id)
+        headers = {
+            "Authorization": f"Bearer {self._get_api_key(provider)}",
+            "Content-Type": "application/json",
+        }
+        max_retries = max(1, int(provider.timeout) // 10)
+
+        for attempt in range(max_retries):
+            await asyncio.sleep(10)
+            try:
+                async with session.get(poll_url, headers=headers, timeout=15) as response:
+                    if response.status >= 400:
+                        logger.warning(f"⚠️ [Agnes 轮询] 请求失败: {await self._read_error(response)}")
+                        continue
+                    data = await response.json()
+
+                status = str(data.get("status", "")).lower()
+                progress = data.get("progress", "")
+                logger.info(
+                    f"⏳ [Agnes 轮询] Task ID: {task_id}, 状态: {status}, "
+                    f"进度: {progress}% (尝试 {attempt + 1}/{max_retries})"
+                )
+
+                if status == "completed":
+                    video_url = self._extract_video_url(data)
+                    if video_url:
+                        return video_url
+                    raise VideoTaskError(f"任务显示完成，但未找到视频 URL。API 返回数据: {data}")
+
+                if status == "failed":
+                    error_msg = data.get("error", data.get("message", "未知失败原因"))
+                    if isinstance(error_msg, dict):
+                        error_msg = error_msg.get("message", str(error_msg))
+                    raise VideoTaskError(f"平台反馈：{error_msg}")
+
+                # queued / in_progress → 继续轮询
+            except VideoTaskError:
+                raise
+            except Exception as exc:
+                logger.warning(f"⚠️ [Agnes 轮询] 请求状态异常，跳过本次: {exc}")
+
+        raise VideoTaskError(f"Agnes 视频生成轮询超时，已达到设置的 {provider.timeout} 秒最大等待时间。")
+
     def _extract_video_url(self, data: Dict[str, Any]) -> str:
+        # 标准字段优先
         video_url = data.get("video_url", data.get("url", data.get("output", "")))
         if video_url:
             return self._extract_url(str(video_url))
+        # Agnes Video 特殊字段：remixed_from_video_id 实际就是视频 URL
+        remix_url = data.get("remixed_from_video_id")
+        if remix_url and isinstance(remix_url, str) and remix_url.startswith("http"):
+            return self._extract_url(remix_url)
         data_field = data.get("data")
         if isinstance(data_field, list) and data_field:
             item = data_field[0]
             if isinstance(item, dict):
-                return self._extract_url(str(item.get("url", item.get("output", item.get("video_url", "")))))
+                return self._extract_url(str(item.get("url", item.get("output", item.get("video_url", item.get("remixed_from_video_id", ""))))))
         if isinstance(data_field, dict):
-            return self._extract_url(str(data_field.get("output", data_field.get("url", data_field.get("video_url", "")))))
+            return self._extract_url(str(data_field.get("output", data_field.get("url", data_field.get("video_url", data_field.get("remixed_from_video_id", ""))))))
+        # 兜底：扫描顶层所有字符串字段，匹配 .mp4 URL
+        for value in data.values():
+            if isinstance(value, str) and value.startswith("http") and ".mp4" in value.lower():
+                return self._extract_url(value)
         return ""
 
     async def _fetch_video_from_api(
@@ -236,7 +308,82 @@ class VideoManager:
                 return self._extract_url(str(raw_content))
             raise VideoTaskError(f"Chat 返回值异常: {data}")
 
+        if api_type.startswith("agnes_video"):
+            return await self._fetch_agnes_video(provider, prompt, session, image_urls, api_kwargs)
+
         raise VideoTaskError(f"不受支持的接口模式: {api_type}，请在后台重新选择调用协议。")
+
+    async def _fetch_agnes_video(
+        self,
+        provider: ProviderConfig,
+        prompt: str,
+        session: aiohttp.ClientSession,
+        image_urls: Optional[List[str]] = None,
+        api_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Agnes Video 专用请求：URL 图片 + /v1/videos 端点 + Agnes 状态轮询。"""
+        image_urls = image_urls or []
+        api_kwargs = dict(api_kwargs) if api_kwargs else {}
+
+        # Agnes Video 质量优先默认值（用户未指定时生效）
+        agnes_defaults: Dict[str, Any] = {
+            "width": 1152,
+            "height": 768,
+            "num_frames": 241,
+            "frame_rate": 30,
+        }
+
+        endpoint = build_agnes_video_endpoint(provider.base_url)
+        headers = {
+            "Authorization": f"Bearer {self._get_api_key(provider)}",
+            "Content-Type": "application/json",
+        }
+
+        # 过滤出有效的 URL 图片（Agnes 要求 URL，不支持 base64）
+        valid_image_urls = [u for u in image_urls if u.startswith("http")]
+
+        payload: Dict[str, Any] = {"model": provider.model, "prompt": prompt}
+
+        # 图片参数：单图传 image (字符串)，多图传 extra_body.image (数组)
+        if len(valid_image_urls) == 1:
+            payload["image"] = valid_image_urls[0]
+        elif len(valid_image_urls) > 1:
+            extra_body = dict(api_kwargs.pop("extra_body", {}))
+            extra_body["image"] = valid_image_urls
+            payload["extra_body"] = extra_body
+
+        # 先合并默认参数，再合并用户参数（用户参数优先级最高）
+        for key, value in agnes_defaults.items():
+            payload.setdefault(key, value)
+
+        # 转换 api_kwargs 中的字符串型数值参数为 int（命令行 --key value 解析为字符串）
+        for key, value in list(api_kwargs.items()):
+            if key in _AGNES_NUMERIC_FIELDS and isinstance(value, str):
+                try:
+                    api_kwargs[key] = int(value)
+                except (ValueError, TypeError):
+                    logger.warning(f"⚠️ [Agnes] 参数 {key}={value!r} 不是有效整数，已忽略。")
+                    api_kwargs.pop(key, None)
+        payload.update(api_kwargs)
+
+        logger.info(
+            f"🎬 [Agnes Video 模式] 提交视频任务至: {endpoint}, "
+            f"参数: {payload.get('width')}x{payload.get('height')}, "
+            f"{payload.get('num_frames')}帧/{payload.get('frame_rate')}fps"
+        )
+        async with session.post(endpoint, headers=headers, json=payload, timeout=30) as response:
+            if response.status >= 400:
+                raise VideoTaskError(await self._read_error(response))
+            data = await response.json()
+
+        task_id = data.get("id") or data.get("task_id")
+        if not task_id and isinstance(data.get("data"), dict):
+            task_id = data["data"].get("task_id") or data["data"].get("id")
+        if not task_id:
+            raise VideoTaskError(f"Agnes 提交成功但未找到任务 ID。API 原始返回: {data}")
+
+        logger.info(f"✅ [Agnes Video] 任务提交成功，Task ID: {task_id}，进入轮询。")
+        return await self._poll_agnes_task_result(provider, str(task_id), session)
 
     async def background_task_runner(
         self,

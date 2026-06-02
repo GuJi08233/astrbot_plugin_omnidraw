@@ -13,15 +13,15 @@ class PersonaManager:
     def build_persona_prompt(self, user_input_action: str) -> Tuple[str, Dict[str, Any]]:
         action_prompt_part = user_input_action.strip() or "looking at camera and smiling"
         persona_base_part = self.config.persona_base_prompt.strip()
-        
+
         if persona_base_part:
             final_prompt = f"{persona_base_part}, {action_prompt_part}"
         else:
             final_prompt = action_prompt_part
-        
+
         extra_kwargs = {}
         target_img = self.config.persona_ref_image
-        
+
         if target_img:
             if target_img.startswith("http"):
                 extra_kwargs["persona_ref"] = target_img

@@ -11,6 +11,7 @@ from astrbot.api import logger
 
 from .base import (
     BaseProvider,
+    PROVIDER_INTERNAL_KWARG_KEYS,
     extract_error_message,
     extract_image_url_from_response,
     guess_image_content_type,
@@ -180,8 +181,7 @@ class CustomEndpointProvider(BaseProvider):
         endpoint = self._endpoint()
         endpoint_path = self._endpoint_path(endpoint)
         ref_images = self.get_reference_images(**kwargs)
-        internal_keys = {"user_refs", "user_ref", "persona_refs", "persona_ref"}
-        api_kwargs = {key: value for key, value in kwargs.items() if key not in internal_keys}
+        api_kwargs = {key: value for key, value in kwargs.items() if key not in PROVIDER_INTERNAL_KWARG_KEYS}
         headers = {"Authorization": "Bearer " + current_key}
 
         logger.info(f"📝 [自定义通道] 最终发送给 API 的核心提示词:\n{prompt}")

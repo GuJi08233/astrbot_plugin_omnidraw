@@ -175,15 +175,16 @@
               "openai_image",
               "openai_chat",
               "gemini_official",
+              "agnes_image",
               "custom_endpoint"
             ],
-            "hint": "openai_image 适合标准图片接口；openai_chat 适合会返回图片链接的 chat/completions 中转站；gemini_official 使用 Google Gemini 官方 generateContent；custom_endpoint 为自定义完整路径，只请求你填写的完整 URL，不会追加 /v1、/images/generations 或 /chat/completions。",
+            "hint": "openai_image 适合标准图片接口；openai_chat 适合会返回图片链接的 chat/completions 中转站；gemini_official 使用 Google Gemini 官方 generateContent；agnes_image 使用 Agnes Image 2.1 Flash，图生图需传入图片 URL；custom_endpoint 为自定义完整路径，只请求你填写的完整 URL，不会追加 /v1、/images/generations 或 /chat/completions。",
             "default": "openai_image"
           },
           "base_url": {
             "description": "接口地址",
             "type": "string",
-            "hint": "标准/对话模式通常填写 https://api.example.com/v1；Gemini 官方模式可留空或填写 https://generativelanguage.googleapis.com/v1beta；自定义模式必须填写完整请求路径，例如 https://api.example.com/v1/images/generations。",
+            "hint": "标准/对话模式通常填写 https://api.example.com/v1；Gemini 官方模式可留空或填写 https://generativelanguage.googleapis.com/v1beta；Agnes Image 可填写 https://apihub.agnes-ai.com/v1/images/generations 或 https://apihub.agnes-ai.com；自定义模式必须填写完整请求路径，例如 https://api.example.com/v1/images/generations。",
             "default": ""
           },
           "api_keys": {
@@ -195,7 +196,7 @@
           "model": {
             "description": "当前模型",
             "type": "string",
-            "hint": "当前默认使用的模型名，应同时存在于下方模型池中。Gemini 官方模式可填 gemini-3.1-flash-image-preview。",
+            "hint": "当前默认使用的模型名，应同时存在于下方模型池中。Gemini 官方模式可填 gemini-3.1-flash-image-preview；Agnes Image 填 agnes-image-2.1-flash。",
             "default": ""
           },
           "available_models": {
@@ -235,9 +236,10 @@
             "options": [
               "async_task",
               "openai_sync",
-              "openai_chat"
+              "openai_chat",
+              "agnes_video"
             ],
-            "hint": "async_task 为提交后轮询；openai_sync 为同步阻塞；openai_chat 为 chat/completions 伪装视频生成。",
+            "hint": "async_task 为提交后轮询；openai_sync 为同步阻塞；openai_chat 为 chat/completions 伪装视频生成；agnes_video 为 Agnes Video 异步任务。",
             "default": "async_task"
           },
           "base_url": {

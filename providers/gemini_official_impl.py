@@ -14,6 +14,7 @@ from astrbot.api import logger
 from ..constants import DEFAULT_GEMINI_BASE_URL, DEFAULT_GEMINI_MODEL
 from .base import (
     BaseProvider,
+    PROVIDER_INTERNAL_KWARG_KEYS,
     extract_error_message,
     extract_image_url_from_response,
     guess_image_content_type,
@@ -211,8 +212,7 @@ class GeminiOfficialProvider(BaseProvider):
         if len(ref_images) > MAX_REFERENCE_IMAGES:
             raise ValueError(f"Gemini 官方接口最多支持 {MAX_REFERENCE_IMAGES} 张参考图。")
 
-        internal_keys = {"user_refs", "user_ref", "persona_refs", "persona_ref"}
-        api_kwargs = {key: value for key, value in kwargs.items() if key not in internal_keys}
+        api_kwargs = {key: value for key, value in kwargs.items() if key not in PROVIDER_INTERNAL_KWARG_KEYS}
         model = self._request_model(api_kwargs)
         if not model:
             raise ValueError("Gemini 官方节点未配置模型名！")

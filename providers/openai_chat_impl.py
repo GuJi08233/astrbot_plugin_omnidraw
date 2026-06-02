@@ -9,6 +9,7 @@ from astrbot.api import logger
 
 from .base import (
     BaseProvider,
+    PROVIDER_INTERNAL_KWARG_KEYS,
     build_chat_completions_endpoint,
     extract_error_message,
     extract_image_url_from_response,
@@ -93,8 +94,7 @@ class OpenAIChatProvider(BaseProvider):
         }
 
         # 🚀 将高级透传参数暴力注入到 Chat 协议的顶级结构中
-        internal_keys = {"user_refs", "user_ref", "persona_refs", "persona_ref"}
-        api_kwargs = {k: v for k, v in kwargs.items() if k not in internal_keys}
+        api_kwargs = {k: v for k, v in kwargs.items() if k not in PROVIDER_INTERNAL_KWARG_KEYS}
         
         if api_kwargs:
             payload.update(api_kwargs)

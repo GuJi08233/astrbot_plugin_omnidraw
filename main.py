@@ -1208,6 +1208,17 @@ class OmniDrawPlugin(Star):
                 await session_obj.close()
         return processed_paths
 
+    def _http_image_refs(self, raw_images: Iterable[Any]) -> List[str]:
+        refs = []
+        seen = set()
+        for image_ref in raw_images or []:
+            ref = str(image_ref or "").strip()
+            if not ref.startswith("http") or ref in seen:
+                continue
+            seen.add(ref)
+            refs.append(ref)
+        return refs
+
     def _normalize_count(self, count: Any) -> int:
         try:
             parsed_count = int(float(str(count).strip()))
@@ -1682,10 +1693,37 @@ class OmniDrawPlugin(Star):
             "/切换模型 [画图/自拍/视频] [序号或名称]\n"
             "/签到\n"
             "/清理缓存\n"
+            "/万象参数\n"
             "/万象帮助\n\n"
         )
         if self.plugin_config.presets:
             msg += "✨ 极速宏:\n" + "\n".join([f"/{preset}" for preset in self.plugin_config.presets.keys()])
+        yield event.plain_result(msg)
+
+    @filter.command("万象参数")
+    @handle_errors
+    async def cmd_param_help(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        msg = (
+            "⚙️ 万象画卷参数写法\n\n"
+            "基础格式：\n"
+            "/画 提示词 --参数 值 --参数 值\n"
+            "/自拍 动作或场景 --参数 值\n"
+            "/视频 提示词 --参数 值\n\n"
+            "图片常用参数：\n"
+            "🚀 起步：/画 一只猫 --size 1024x1024\n"
+            "⚖️ 横图：/画 一只猫 --size 1152x768\n"
+            "✨ 质量：/画 一只猫 --size 1280x1024\n\n"
+            "视频常用参数：\n"
+            "🚀 快速：/视频 云海飞行 --width 768 --height 512 --num_frames 129 --frame_rate 20\n"
+            "⚖️ 默认：/视频 云海飞行 --width 1152 --height 768 --num_frames 241 --frame_rate 30\n"
+            "✨ 质量：/视频 云海飞行 --width 1152 --height 768 --num_frames 441 --frame_rate 30\n\n"
+            "说明：\n"
+            "- 参数名前必须写两个短横线，例如 --size。\n"
+            "- Agnes Image 默认使用 --size 1024x1024。\n"
+            "- Agnes Video 默认使用 1152x768、241 帧、30fps。\n"
+            "- 想更快就降低 size、width、height 或 num_frames。\n"
+            "- 想更清晰就提高尺寸，但会更慢。"
+        )
         yield event.plain_result(msg)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -1925,6 +1963,10 @@ class OmniDrawPlugin(Star):
                 raw_refs = self._get_event_images(event, include_at_avatars=True)
                 preset_prompt = self.plugin_config.presets[cmd_name]
                 safe_refs = await self._process_and_save_images(raw_refs, session=session)
+                ref_kwargs = {}
+                original_url_refs = self._http_image_refs(raw_refs)
+                if original_url_refs:
+                    ref_kwargs["_omnidraw_user_ref_urls"] = original_url_refs
 
                 msg = self._format_pending_message(
                     self.plugin_config.draw_pending_message,
@@ -1940,7 +1982,12 @@ class OmniDrawPlugin(Star):
                 yield event.plain_result(msg)
 
                 chain_manager = ChainManager(self.plugin_config, session)
-                result = await chain_manager.run_chain_with_metadata("text2img", preset_prompt, user_refs=safe_refs)
+                result = await chain_manager.run_chain_with_metadata(
+                    "text2img",
+                    preset_prompt,
+                    user_refs=safe_refs,
+                    **ref_kwargs,
+                )
             self._record_generated_images(event, 1)
             yield event.chain_result(self._build_image_success_components(result, time.perf_counter() - started_at))
         except Exception as exc:
@@ -1983,12 +2030,15 @@ class OmniDrawPlugin(Star):
         started_at = time.perf_counter()
         async with aiohttp.ClientSession() as session:
             safe_refs = await self._process_and_save_images(raw_refs, session=session)
+            original_url_refs = self._http_image_refs(raw_refs)
             prompt, kwargs = self.cmd_parser.parse(message)
             if not prompt and safe_refs:
                 prompt = "根据参考图生成一张自然、清晰、符合原图语义的图片。"
             param_count = len(kwargs)
             if safe_refs:
                 kwargs["user_refs"] = safe_refs
+            if original_url_refs:
+                kwargs["_omnidraw_user_ref_urls"] = original_url_refs
 
             msg = self._format_pending_message(
                 self.plugin_config.draw_pending_message,
@@ -2047,10 +2097,16 @@ class OmniDrawPlugin(Star):
             raw_refs = self._get_event_images(event)
             target_refs = raw_refs if raw_refs else self.plugin_config.persona_ref_images
             safe_refs = await self._process_and_save_images(target_refs, session=session)
+            original_url_refs = self._http_image_refs(raw_refs)
+            persona_url_refs = [] if raw_refs else self._http_image_refs(target_refs)
             if safe_refs:
                 extra_kwargs["user_refs"] = safe_refs
                 if not raw_refs:
                     extra_kwargs.pop("persona_ref", None)
+            if original_url_refs:
+                extra_kwargs["_omnidraw_user_ref_urls"] = original_url_refs
+            if persona_url_refs:
+                extra_kwargs["_omnidraw_persona_ref_urls"] = persona_url_refs
 
             msg = self._format_pending_message(
                 self.plugin_config.selfie_pending_message,
@@ -2152,6 +2208,8 @@ class OmniDrawPlugin(Star):
                 raw_refs = self._get_event_images(event)
                 target_refs = raw_refs if raw_refs else self.plugin_config.persona_ref_images
                 safe_refs = await self._process_and_save_images(target_refs, session=session)
+                original_url_refs = self._http_image_refs(raw_refs)
+                persona_url_refs = [] if raw_refs else self._http_image_refs(target_refs)
                 extra_param_kwargs = self._parse_extra_params(extra_params)
 
                 chain_to_use = "selfie" if self.plugin_config.chains.get("selfie") else "text2img"
@@ -2163,6 +2221,10 @@ class OmniDrawPlugin(Star):
                         kwargs["user_refs"] = safe_refs
                         if not raw_refs:
                             kwargs.pop("persona_ref", None)
+                    if original_url_refs:
+                        kwargs["_omnidraw_user_ref_urls"] = original_url_refs
+                    if persona_url_refs:
+                        kwargs["_omnidraw_persona_ref_urls"] = persona_url_refs
                     if aspect_ratio:
                         kwargs["aspect_ratio"] = aspect_ratio
                     if size:
@@ -2211,9 +2273,13 @@ class OmniDrawPlugin(Star):
                 return quota_error
             async with aiohttp.ClientSession() as session:
                 optimized_actions = await self.prompt_optimizer.optimize(prompt, count, session=session)
-                safe_refs = await self._process_and_save_images(self._get_event_images(event), session=session)
+                raw_refs = self._get_event_images(event)
+                safe_refs = await self._process_and_save_images(raw_refs, session=session)
+                original_url_refs = self._http_image_refs(raw_refs)
 
                 kwargs = {"user_refs": safe_refs} if safe_refs else {}
+                if original_url_refs:
+                    kwargs["_omnidraw_user_ref_urls"] = original_url_refs
                 if aspect_ratio:
                     kwargs["aspect_ratio"] = aspect_ratio
                 if size:

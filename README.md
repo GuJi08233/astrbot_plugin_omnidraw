@@ -39,7 +39,7 @@
 仓库地址：
 
 ```text
-https://github.com/diaomin66/astrbot_plugin_omnidraw/
+https://github.com/GuJi08233/astrbot_plugin_omnidraw/
 ```
 
 安装完成后，在 AstrBot 后台重载插件，看到“万象画卷”正常启用即可。
@@ -64,13 +64,15 @@ https://github.com/diaomin66/astrbot_plugin_omnidraw/
 | 字段 | 怎么填 |
 | :--- | :--- |
 | 节点 ID | 自己取一个好记的名字，比如 `image_node_1` |
-| API 类型 | 按你的接口选择：`openai_image` 标准生图、`openai_chat` 对话透传中转站、`gemini_official` Gemini 官方、`custom_endpoint` 自定义完整路径 |
-| Base URL | 标准/对话模式填中转站或官方接口地址，例如 `https://example.com/v1`；Gemini 官方可留空或填 `https://generativelanguage.googleapis.com/v1beta`；自定义模式必须填完整请求 URL |
+| API 类型 | 按你的接口选择：`openai_image` 标准生图、`openai_chat` 对话透传中转站、`gemini_official` Gemini 官方、`agnes_image` Agnes Image、`custom_endpoint` 自定义完整路径 |
+| Base URL | 标准/对话模式填中转站或官方接口地址，例如 `https://example.com/v1`；Gemini 官方可留空或填 `https://generativelanguage.googleapis.com/v1beta`；Agnes Image 可填 `https://apihub.agnes-ai.com/v1/images/generations`；自定义模式必须填完整请求 URL |
 | API Keys | 填你的 key，多个 key 可按页面提示添加 |
-| 模型 | 填模型名，例如 `gpt-image-1`、`gemini-3.1-flash-image-preview` 等 |
+| 模型 | 填模型名，例如 `gpt-image-1`、`gemini-3.1-flash-image-preview`、`agnes-image-2.1-flash` 等 |
 | Timeout | 建议画图 120-300，视频 300 或更高 |
 
 `gemini_official` 使用 Google Gemini 原生 `generateContent` 接口，请求会发送到 `/models/{model}:generateContent`，认证使用 `x-goog-api-key`，返回图片会从 `candidates[].content.parts[].inlineData` 解析成 `data:image/...;base64,...`。
+
+`agnes_image` 使用 Agnes Image 2.1 Flash，默认端点为 `https://apihub.agnes-ai.com/v1/images/generations`，默认模型名为 `agnes-image-2.1-flash`，默认尺寸为 `1024x1024`，按 1K 起步保证基础清晰度。文生图会提交 `model`、`prompt`、`size`；图生图会把可访问的图片 URL 放入 `extra_body.image`，并默认要求 `response_format: "url"`。如果参考图只有本地路径或 base64，Agnes 官方接口无法直接读取，需要换成可公网访问的图片 URL。
 
 `custom_endpoint` 只请求你填写的完整路径，不会自动追加 `/v1`、`/images/generations`、`/images/edits` 或 `/chat/completions`。例如要请求硅基流动、豆包或海外中转站的某个固定接口时，应直接填写 `https://api.example.com/v1/images/generations`、`https://api.example.com/v1/chat/completions` 或服务商文档给出的完整 endpoint。Chat Completions 仅适合会返回图片链接的中转站；官方 OpenAI 生图建议使用 Images 或 Responses 路径。
 
@@ -199,6 +201,7 @@ https://github.com/diaomin66/astrbot_plugin_omnidraw/
 | `/切换模型 [目标] [序号/名称]` | 切换指定模型 | `/切换模型 画图 2` |
 | `/清理缓存` | 管理员清理临时图片缓存 | `/清理缓存` |
 | `/万象帮助` | 查看插件帮助 | `/万象帮助` |
+| `/万象参数` | 查看参数写法和常用预设 | `/万象参数` |
 
 目标一般可以写：
 
@@ -255,6 +258,7 @@ https://github.com/diaomin66/astrbot_plugin_omnidraw/
 
 - **画图超时**：建议 `120` 到 `300`。
 - **视频超时**：建议 `300` 或更高。
+- **Agnes Image**：模型名使用 `agnes-image-2.1-flash`。图生图参考图需要是可访问 URL；聊天平台图片如果已过期或只能本地访问，Agnes 无法直接读取。
 - **模型名分隔**：如果手动填写多个模型，请使用英文逗号 `,`，不要用中文逗号。
 - **人设参考图**：建议上传清晰、无遮挡、人物比例正常的图片。
 - **缓存清理**：缓存清理只处理 `temp_images` 与 `user_refs` 里的图片文件，不会删除人设参考图。

@@ -3,6 +3,7 @@
 import aiohttp
 from ..models import ProviderConfig
 from ..constants import APIType
+from .agnes_image_impl import AgnesImageProvider
 from .base import BaseProvider
 from .custom_endpoint_impl import CustomEndpointProvider
 from .gemini_official_impl import GeminiOfficialProvider
@@ -18,6 +19,8 @@ def create_provider(config: ProviderConfig, session: aiohttp.ClientSession) -> B
         return OpenAIChatProvider(config, session)
     elif config.api_type == APIType.GEMINI_OFFICIAL:
         return GeminiOfficialProvider(config, session)
+    elif config.api_type == APIType.AGNES_IMAGE:
+        return AgnesImageProvider(config, session)
     elif config.api_type == APIType.CUSTOM_ENDPOINT:
         return CustomEndpointProvider(config, session)
     else:

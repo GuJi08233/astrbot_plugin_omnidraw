@@ -11,12 +11,16 @@ DEFAULT_DRAW_ERROR_MESSAGE = "💥 绘制失败: {error}"
 DEFAULT_SELFIE_ERROR_MESSAGE = "💥 自拍生成失败: {error}"
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-image-preview"
+DEFAULT_AGNES_IMAGE_BASE_URL = "https://apihub.agnes-ai.com/v1/images/generations"
+DEFAULT_AGNES_IMAGE_MODEL = "agnes-image-2.1-flash"
+DEFAULT_AGNES_IMAGE_SIZE = "1024x1024"
 
 class APIType:
     """接口类型枚举"""
     OPENAI_IMAGE = "openai_image"
     OPENAI_CHAT = "openai_chat"  # 新增 Chat 解析出图类型
     GEMINI_OFFICIAL = "gemini_official"
+    AGNES_IMAGE = "agnes_image"
     CUSTOM_ENDPOINT = "custom_endpoint"
 
 class MessageEmoji:
